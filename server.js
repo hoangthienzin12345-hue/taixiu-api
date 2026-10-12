@@ -317,7 +317,6 @@ function buildResponse(game, history) {
 
     const response = {
         "id": ADMIN,
-        "game": game,
         "phien_truoc": lastResult.session,
         "xuc_xac": `${lastResult.dice[0]} - ${lastResult.dice[1]} - ${lastResult.dice[2]}`,
         "ket_qua": lastResult.result_vn.toLowerCase(),
@@ -325,21 +324,8 @@ function buildResponse(game, history) {
         "phien_nay": lastResult.session + 1,
         "du_doan": prediction.prediction === "Tài" ? "tài" : "xỉu",
         "do_tin_cay": `${prediction.confidence}%`,
-        "ly_do": prediction.reason,
-        "biet_hien_tai": `${prediction.doDaiBET} ván`
     };
 
-    if (prediction.isBao) {
-        response["canh_bao"] = "⚠️ BÃO XUẤT HIỆN - NÊN NGHỈ 3 PHIÊN ⚠️";
-    }
-
-    // 5 ván gần nhất
-    response["5_van_gan_nhat"] = history.slice(0, 5).map((v, i) => ({
-        stt: i + 1,
-        ket_qua: v.result_vn.toLowerCase(),
-        tong: v.total,
-        xuc_xac: `${v.dice[0]}-${v.dice[1]}-${v.dice[2]}`
-    }));
 
     return response;
 }
