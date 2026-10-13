@@ -315,6 +315,9 @@ function buildResponse(game, history) {
     const lastResult = history[0];
     const prediction = predictCombo(history, history);
 
+    // Bỏ chữ trong ngoặc (...) của lý do
+    const lyDo = prediction.reason.replace(/\s*\([^)]*\)/g, '');
+
     const response = {
         "id": ADMIN,
         "phien_truoc": lastResult.session,
@@ -324,8 +327,8 @@ function buildResponse(game, history) {
         "phien_nay": lastResult.session + 1,
         "du_doan": prediction.prediction === "Tài" ? "tài" : "xỉu",
         "do_tin_cay": `${prediction.confidence}%`,
+        "ly_do": lyDo
     };
-
 
     return response;
 }
