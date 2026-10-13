@@ -11,26 +11,26 @@ const ADMIN = "@ADMNLc79";
 const API_URL_HU = "https://wtx.tele68.com/v1/tx/lite-sessions?cp=R&cl=R&pf=web&at=83991213bfd4c554dc94bcd98979bdc5";
 const API_URL_MD5 = "https://wtxmd52.tele68.com/v1/txmd5/sessions";
 
-// ==================== BẢNG BẮT ĐIỂM "HỐT BẠC" ====================
+// ==================== BẢNG ĐIỂM "HỐT BẠC" (CẬP NHẬT THEO DATA 213 PHIÊN) ====================
 const BANG_DIEM = {
     // NHÓM XỈU (3-10)
-    3:  { pred: "Nghỉ", conf: 0,  note: "X3 dữ liệu hiếm" },
-    4:  { pred: "Tài",  conf: 90, note: "X4 ALL TÀI" },
-    5:  { pred: "Tài",  conf: 70, note: "X5 TÀI" },
-    6:  { pred: "Tài",  conf: 80, note: "X6 ALL TÀI" },
-    7:  { pred: "Xỉu",  conf: 80, note: "X7 BỆT XỈU" },
-    8:  { pred: "Tài",  conf: 85, note: "X8 ALL TÀI" },
-    9:  { pred: "Xỉu",  conf: 80, note: "X9 ALL XỈU" },
-    10: { pred: "Tài",  conf: 90, note: "X10 ALL TÀI" },
+    3:  { pred: "Nghỉ", conf: 0,   note: "X3 dữ liệu hiếm" },
+    4:  { pred: "Xỉu",  conf: 75,  note: "X4 → XỈU 75% (3/4)" },
+    5:  { pred: "Tài",  conf: 100, note: "X5 → TÀI 100% (5/5)" },
+    6:  { pred: "Xỉu",  conf: 67,  note: "X6 → XỈU 67% (8/12)" },
+    7:  { pred: "Tài",  conf: 56,  note: "X7 → TÀI 56% (10/18)" },
+    8:  { pred: "Tài",  conf: 64,  note: "X8 → TÀI 64% (14/22)" },
+    9:  { pred: "Xỉu",  conf: 60,  note: "X9 → XỈU 60% (18/30)" },
+    10: { pred: "Xỉu",  conf: 59,  note: "X10 → XỈU 59% (13/22)" },
     // NHÓM TÀI (11-18)
-    11: { pred: "Xỉu",  conf: 85, note: "T11 ALL XỈU" },
-    12: { pred: "Tài",  conf: 70, note: "T12 BỆT TÀI" },
-    13: { pred: "Xỉu",  conf: 70, note: "T13 XỈU" },
-    14: { pred: "Xỉu",  conf: 95, note: "T14 SIÊU XỈU" },
-    15: { pred: "Tài",  conf: 70, note: "T15 ALL TÀI" },
-    16: { pred: "Xỉu",  conf: 85, note: "T16 ALL XỈU" },
-    17: { pred: "Xỉu",  conf: 90, note: "T17 ALL XỈU" },
-    18: { pred: "Xỉu",  conf: 100, note: "T18 BẺ XỈU 100%" }
+    11: { pred: "Xỉu",  conf: 54,  note: "T11 → XỈU 54% (15/28)" },
+    12: { pred: "Tài",  conf: 55,  note: "T12 → TÀI 55% (11/20)" },
+    13: { pred: "Xỉu",  conf: 56,  note: "T13 → XỈU 56% (9/16)" },
+    14: { pred: "Xỉu",  conf: 75,  note: "T14 → XỈU 75% (9/12)" },
+    15: { pred: "Nghỉ", conf: 0,   note: "T15 50/50 - không rõ" },
+    16: { pred: "Nghỉ", conf: 0,   note: "T16 50/50 - không rõ" },
+    17: { pred: "Xỉu",  conf: 75,  note: "T17 → XỈU 75% (3/4)" },
+    18: { pred: "Xỉu",  conf: 90,  note: "T18 → XỈU 90% (dữ liệu cũ)" }
 };
 
 // ==================== DỰ ĐOÁN CHỈ DÙNG BẢNG ĐIỂM ====================
@@ -46,7 +46,6 @@ function predictByScore(diceHistory) {
     const lastTotal = diceHistory[0].total;
     const diemMeo = BANG_DIEM[lastTotal];
 
-    // Nếu tổng điểm có trong bảng
     if (diemMeo) {
         if (diemMeo.pred === "Nghỉ") {
             return {
@@ -62,7 +61,6 @@ function predictByScore(diceHistory) {
         };
     }
 
-    // Fallback nếu điểm ngoài bảng (không xảy ra với xúc xắc 3-18)
     return {
         prediction: "Xỉu",
         confidence: 55,
@@ -193,7 +191,7 @@ await app.register(cors, { origin: "*" });
 app.get("/", async () => ({
     status: "active",
     admin: ADMIN,
-    algorithm: "🎲 TÀI XỈU VIP - BẢNG ĐIỂM HỐT BẠC 🎲",
+    algorithm: "🎲 TÀI XỈU VIP - BẢNG ĐIỂM HỐT BẠC (v2 - DATA DRIVEN) 🎲",
     endpoints: {
         hu: "/api/taixiu/{ten_game}?key=" + VALID_KEY,
         md5: "/api/taixiumd5/{ten_game}?key=" + VALID_KEY,
@@ -267,27 +265,27 @@ app.get("/api/bang-diem", async (request, reply) => {
     if (!keyCheck.valid) return reply.status(401).send({ error: keyCheck.error });
 
     return {
-        title: "📊 BẢNG ĐIỂM HỐT BẠC 📊",
+        title: "📊 BẢNG ĐIỂM HỐT BẠC v2 (DATA DRIVEN) 📊",
         admin: ADMIN,
         xiu: {
             "3":  "NGHỈ (Dữ liệu hiếm)",
-            "4":  "TÀI 90%",
-            "5":  "TÀI 70%",
-            "6":  "TÀI 80%",
-            "7":  "XỈU 80%",
-            "8":  "TÀI 85%",
-            "9":  "XỈU 80%",
-            "10": "TÀI 90%"
+            "4":  "XỈU 75%",
+            "5":  "TÀI 100%",
+            "6":  "XỈU 67%",
+            "7":  "TÀI 56%",
+            "8":  "TÀI 64%",
+            "9":  "XỈU 60%",
+            "10": "XỈU 59%"
         },
         tai: {
-            "11": "XỈU 85%",
-            "12": "TÀI 70%",
-            "13": "XỈU 70%",
-            "14": "XỈU 95%",
-            "15": "TÀI 70%",
-            "16": "XỈU 85%",
-            "17": "XỈU 90%",
-            "18": "XỈU 100%"
+            "11": "XỈU 54%",
+            "12": "TÀI 55%",
+            "13": "XỈU 56%",
+            "14": "XỈU 75%",
+            "15": "NGHỈ (50/50)",
+            "16": "NGHỈ (50/50)",
+            "17": "XỈU 75%",
+            "18": "XỈU 90%"
         }
     };
 });
@@ -324,7 +322,7 @@ app.get("/api/stats", async (request, reply) => {
                 ? `${(md5Tai / md5History.length * 100).toFixed(1)}% Tài - ${((md5History.length - md5Tai) / md5History.length * 100).toFixed(1)}% Xỉu`
                 : "Chưa có dữ liệu"
         },
-        algorithm: "BẢNG ĐIỂM HỐT BẠC",
+        algorithm: "BẢNG ĐIỂM HỐT BẠC v2 (DATA DRIVEN)",
         key: VALID_KEY
     };
 });
@@ -344,7 +342,7 @@ const start = async () => {
 
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║     TÀI XỈU - BẢNG ĐIỂM HỐT BẠC                              ║
+║     TÀI XỈU - BẢNG ĐIỂM HỐT BẠC v2 (DATA DRIVEN)             ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  🚀 Server: http://localhost:${PORT}                            ║
 ║  🔑 KEY: ${VALID_KEY}                                          ║
