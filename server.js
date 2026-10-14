@@ -11,31 +11,40 @@ const N = 15;
 const API_HU  = "https://wtx.tele68.com/v1/tx/lite-sessions?cp=R&cl=R&pf=web&at=83991213bfd4c554dc94bcd98979bdc5";
 const API_MD5 = "https://wtxmd52.tele68.com/v1/txmd5/sessions";
 
-// ==================== BẢNG ĐIỂM ====================
-const MEO_DIEM = {
-    3:  { p: "Xỉu", c: 70 }, 4:  { p: "Tài", c: 60 }, 5:  { p: "Tài", c: 70 },
-    6:  { p: "Xỉu", c: 60 }, 7:  { p: "Tài", c: 80 }, 8:  { p: "Xỉu", c: 80 },
-    9:  { p: "Xỉu", c: 70 }, 10: { p: "Tài", c: 80 }, 11: { p: "Xỉu", c: 60 },
-    12: { p: "Tài", c: 80 }, 13: { p: "Tài", c: 80 }, 14: { p: "Xỉu", c: 60 },
-    15: { p: "Xỉu", c: 70 }, 16: { p: "Tài", c: 60 }, 17: { p: "Xỉu", c: 60 },
-    18: { p: "Xỉu", c: 80 }
+// ==================== BẢNG BẮT ĐIỂM "HỐT BẠC" ====================
+const BANG_DIEM = {
+    3:  { pred: "Nghỉ", conf: 0,   note: "X3 Dữ liệu hiếm, nên nghỉ" },
+    4:  { pred: "Tài",  conf: 90,  note: "X4 ALL TÀI (90% Bẻ cầu)" },
+    5:  { pred: "Tài",  conf: 70,  note: "X5 70% TÀI" },
+    6:  { pred: "Tài",  conf: 80,  note: "X6 ALL TÀI (Hay nhảy T12)" },
+    7:  { pred: "Xỉu",  conf: 80,  note: "X7 BỆT XỈU (Hoặc về X8, X9)" },
+    8:  { pred: "Tài",  conf: 85,  note: "X8 ALL TÀI (Tỉ lệ nổ Tài cực cao)" },
+    9:  { pred: "Xỉu",  conf: 80,  note: "X9 ALL XỈU (Đứng Xỉu 10)" },
+    10: { pred: "Tài",  conf: 90,  note: "X10 ALL TÀI (Điểm gãy sang T11, T12)" },
+    11: { pred: "Xỉu",  conf: 85,  note: "T11 ALL XỈU (Hồi mã thương 80-85%)" },
+    12: { pred: "Tài",  conf: 70,  note: "T12 BỆT TÀI (65-70% Đứng tiếp Tài)" },
+    13: { pred: "Xỉu",  conf: 70,  note: "T13 60-70% XỈU (Cầu 1-1)" },
+    14: { pred: "Xỉu",  conf: 95,  note: "T14 SIÊU XỈU (Điểm vàng để bẻ)" },
+    15: { pred: "Tài",  conf: 70,  note: "T15 ALL TÀI (Nổ Tài 16, 17)" },
+    16: { pred: "Xỉu",  conf: 85,  note: "T16 ALL XỈU (Tài lớn dễ gãy)" },
+    17: { pred: "Xỉu",  conf: 90,  note: "T17 ALL XỈU (90% Về Xỉu ngay)" },
+    18: { pred: "Xỉu",  conf: 100, note: "T18 BẺ XỈU 100%" }
 };
 
-// ==================== DANH SÁCH CẦU CHU KỲ ====================
-// cycle: chuỗi độ dài streak đi theo thứ tự CŨ → MỚI
-// Ví dụ: [1,2,1] → streak 1 tay, 2 tay, 1 tay, 1 tay, 2 tay, 1 tay...
-const CAU_LIST = [
-    { cycle: [4],      name: "4-4",   conf: 70, minCheck: 2 },
-    { cycle: [3],      name: "3-3",   conf: 75, minCheck: 2 },
-    { cycle: [2],      name: "2-2",   conf: 80, minCheck: 2 },
-    { cycle: [1,2,1],  name: "1-2-1", conf: 75, minCheck: 6 },
-    { cycle: [1,2,2],  name: "1-2-2", conf: 75, minCheck: 6 },
-    { cycle: [2,2,1],  name: "2-2-1", conf: 75, minCheck: 6 },
-    { cycle: [1,2,3],  name: "1-2-3", conf: 72, minCheck: 6 },
-    { cycle: [3,1,2],  name: "3-1-2", conf: 72, minCheck: 6 },
-    { cycle: [1,3],    name: "1-3-1", conf: 73, minCheck: 4 },
-    { cycle: [3,1],    name: "3-1-3", conf: 73, minCheck: 4 },
-    { cycle: [1],      name: "1-1",   conf: 80, minCheck: 3 }
+// ==================== CẦU CHU KỲ ====================
+// cycle: [độ dài streak theo thứ tự CŨ→MỚI]
+const CAU_CYCLE = [
+    { cycle: [1],     name: "1-1",   conf: 80, minCheck: 3 },
+    { cycle: [2],     name: "2-2",   conf: 80, minCheck: 2 },
+    { cycle: [3],     name: "3-3",   conf: 75, minCheck: 2 },
+    { cycle: [4],     name: "4-4",   conf: 70, minCheck: 2 },
+    { cycle: [1,2,1], name: "1-2-1", conf: 75, minCheck: 6 },
+    { cycle: [1,2,2], name: "1-2-2", conf: 75, minCheck: 6 },
+    { cycle: [2,2,1], name: "2-2-1", conf: 75, minCheck: 6 },
+    { cycle: [1,2,3], name: "1-2-3", conf: 72, minCheck: 6 },
+    { cycle: [3,1,2], name: "3-1-2", conf: 72, minCheck: 6 },
+    { cycle: [1,3],   name: "1-3-1", conf: 73, minCheck: 4 },
+    { cycle: [3,1],   name: "3-1-3", conf: 73, minCheck: 4 }
 ];
 
 // ==================== CHUẨN HOÁ ====================
@@ -47,7 +56,6 @@ const norm = (v, p) => {
     }
     return Number(p) >= 11 ? "Tài" : "Xỉu";
 };
-
 const opp = x => x === "Tài" ? "Xỉu" : "Tài";
 
 // ==================== HELPERS ====================
@@ -61,85 +69,151 @@ function streaks(hist) {
     out.push({ type: t, len: l });
     return out;
 }
-
 const chart = h => h?.length
     ? h.slice(0, N).reverse().map(x => x.result === "Tài" ? "T" : "X").join("")
     : "";
-
 const bao = d => d?.[0] === d?.[1] && d?.[1] === d?.[2];
 
-// ==================== MATCHER CẦU CHU KỲ ====================
-function matchCycle(st, cycle, name, conf, minCheck) {
-    const P = cycle.length;
-    if (st.length < minCheck + 1) return null;
+// ==================== CẦU THEO MẶT XÚC XẮC ====================
+function cauMatXucXac(dice) {
+    if (!dice || dice.length < 3) return null;
+    const [a, b, c] = dice;
 
-    // st[1] = streak vừa xong, st[2] trước đó...
-    // cycle[a,b,c] nghĩa là streak-length CŨ→MỚI: a,b,c,a,b,c...
-    // Nên: st[1]=cycle[P-1], st[2]=cycle[P-2], ...
-    for (let i = 1; i <= minCheck; i++) {
-        const expected = cycle[(P - (i % P)) % P];
-        if (st[i].len !== expected) return null;
+    // 1. Kép Bé (1-1, 2-2) → BỆT XỈU
+    if ((a===1&&b===1)||(a===2&&b===2)||(b===1&&c===1)||(b===2&&c===2)) {
+        return { pred: "Xỉu", conf: 80, note: "Kép Bé → BỆT XỈU" };
     }
-
-    const tgt = cycle[0]; // sau cycle[P-1] quay lại cycle[0]
-    const cur = st[0];
-
-    if (cur.len < tgt) {
-        return { pred: cur.type, conf: conf - 3, cau: name, src: `cầu ${name} (${cur.len}/${tgt})` };
+    // 2. Kép Lớn (5-5, 6-6) → BỆT TÀI
+    if ((a===5&&b===5)||(a===6&&b===6)||(b===5&&c===5)||(b===6&&c===6)) {
+        return { pred: "Tài", conf: 80, note: "Kép Lớn → BỆT TÀI" };
     }
-    if (cur.len === tgt) {
-        return { pred: opp(cur.type), conf, cau: name, src: `cầu ${name} (đảo)` };
+    // 3. Hai mặt 6 → XỈU
+    if (dice.filter(x => x === 6).length === 2) {
+        return { pred: "Xỉu", conf: 85, note: "2 mặt 6 → XỈU" };
+    }
+    // 4. Gánh [a-b-a] → ĐẢO CẦU
+    if (a === c && a !== b) {
+        return { pred: "Đảo", conf: 85, note: `Gánh [${a}-${b}-${a}] → ĐẢO` };
+    }
+    // 5. Tiến [a-(a+1)-(a+2)] → TÀI
+    if (a+1 === b && b+1 === c) {
+        return { pred: "Tài", conf: 80, note: `Tiến [${a}-${b}-${c}] → TÀI` };
+    }
+    // 6. Lùi [a-(a-1)-(a-2)] → XỈU
+    if (a-1 === b && b-1 === c) {
+        return { pred: "Xỉu", conf: 80, note: `Lùi [${a}-${b}-${c}] → XỈU` };
     }
     return null;
 }
 
-// ==================== DỰ ĐOÁN THEO CẦU ====================
-function byCau(hist) {
+// ==================== CẦU BỆT ====================
+function cauBet(history, lastResult) {
+    let len = 1;
+    for (let i = 1; i < Math.min(history.length, 20); i++) {
+        if (history[i]?.result === lastResult) len++;
+        else break;
+    }
+    if (len >= 4 && len <= 6) {
+        return { pred: lastResult, conf: 70 + (len - 3) * 3, note: `Bệt ${len} tay → THEO`, doDaiBET: len };
+    }
+    if (len >= 7) {
+        return { pred: opp(lastResult), conf: 80, note: `Bệt ${len} tay → BẺ`, doDaiBET: len };
+    }
+    return { pred: null, conf: 0, note: "", doDaiBET: len };
+}
+
+// ==================== CẦU CHU KỲ ====================
+function matchCycle(st, cycle, name, conf, minCheck) {
+    const P = cycle.length;
+    if (st.length < minCheck + 1) return null;
+    for (let i = 1; i <= minCheck; i++) {
+        const expected = cycle[(P - (i % P)) % P];
+        if (st[i]?.len !== expected) return null;
+    }
+    const tgt = cycle[0];
+    const cur = st[0];
+    if (cur.len < tgt) return { pred: cur.type, conf: conf - 3, cau: name, src: `cầu ${name} (${cur.len}/${tgt})` };
+    if (cur.len === tgt) return { pred: opp(cur.type), conf, cau: name, src: `cầu ${name} (đảo)` };
+    return null;
+}
+
+function byCycleCau(hist) {
     if (hist.length < 4) return null;
     const st = streaks(hist);
     if (st.length < 3) return null;
-    const cur = st[0];
-
-    // 1. Bệt
-    if (cur.len >= 8) return { pred: opp(cur.type), conf: 70, cau: "bệt-bẻ", src: `bệt ${cur.len} tay (BẺ)` };
-    if (cur.len >= 5) return { pred: cur.type,     conf: 62, cau: "bệt-theo", src: `bệt ${cur.len} tay (THEO)` };
-
-    // 2. Các cầu chu kỳ
-    for (const c of CAU_LIST) {
+    for (const c of CAU_CYCLE) {
         const r = matchCycle(st, c.cycle, c.name, c.conf, c.minCheck);
         if (r) return r;
     }
     return null;
 }
 
-// ==================== DỰ ĐOÁN THEO ĐIỂM ====================
+// ==================== BẢNG ĐIỂM ====================
 function byDiem(total) {
-    const e = MEO_DIEM[total];
-    return e ? { pred: e.p, conf: e.c, cau: `điểm ${total}`, src: `bảng điểm ${total}` } : null;
+    const e = BANG_DIEM[total];
+    if (!e || e.pred === "Nghỉ") return null;
+    return { pred: e.pred, conf: e.conf, cau: `điểm ${total}`, src: e.note };
 }
 
-// ==================== KẾT HỢP CẦU + ĐIỂM ====================
+// ==================== DỰ ĐOÁN TỔNG HỢP ====================
 function predict(hist) {
     const last = hist[0];
-    if (bao(last.dice)) return { pred: "NGHỈ", conf: 0, cau: "bão", src: "bão → nghỉ" };
 
-    const c = byCau(hist.slice(0, N));
+    // 1. BÃO → NGHỈ
+    if (bao(last.dice)) {
+        return { pred: "NGHỈ", conf: 0, cau: "bão", src: "bão → nghỉ 3 phiên" };
+    }
+
+    const signals = [];
+
+    // 1. Bảng điểm (ưu tiên cao nhất)
     const d = byDiem(Number(last.total));
+    if (d) signals.push({ ...d, priority: 100 });
 
-    // Cả 2 đồng thuận → tăng conf
-    if (c && d && c.pred === d.pred) {
-        const conf = Math.min(95, Math.round((c.conf + d.conf) / 2) + 8);
-        return { pred: c.pred, conf, cau: c.cau, src: `✅ cầu + điểm đồng thuận` };
+    // 2. Cầu mặt xúc xắc
+    const cm = cauMatXucXac(last.dice);
+    if (cm) {
+        if (cm.pred === "Đảo") {
+            signals.push({ pred: opp(last.result), conf: cm.conf, cau: "gánh", src: cm.note, priority: 95 });
+        } else {
+            signals.push({ pred: cm.pred, conf: cm.conf, cau: "mặt-xx", src: cm.note, priority: 95 });
+        }
     }
-    // Xung đột → chọn cái conf cao hơn
-    if (c && d && c.pred !== d.pred) {
-        if (c.conf >= d.conf) return { ...c, src: `⚔️ cầu thắng (${c.conf}% vs ${d.conf}%)` };
-        return { ...d, src: `⚔️ điểm thắng (${d.conf}% vs ${c.conf}%)` };
-    }
-    if (c) return c;
-    if (d) return d;
 
-    return { pred: opp(last.result), conf: 52, cau: "-", src: "đảo mặc định" };
+    // 3. Bệt
+    const bet = cauBet(hist, last.result);
+    if (bet.pred) {
+        signals.push({
+            pred: bet.pred, conf: bet.conf,
+            cau: bet.doDaiBET >= 7 ? "bệt-bẻ" : "bệt-theo",
+            src: bet.note,
+            priority: bet.doDaiBET >= 7 ? 90 : 80
+        });
+    }
+
+    // 4. Cầu chu kỳ
+    const cyc = byCycleCau(hist.slice(0, N));
+    if (cyc) signals.push({ ...cyc, priority: 85 });
+
+    // Không có tín hiệu → đảo mặc định
+    if (!signals.length) {
+        return { pred: opp(last.result), conf: 52, cau: "-", src: "đảo mặc định" };
+    }
+
+    // Sắp xếp theo priority rồi conf
+    signals.sort((a, b) => b.priority - a.priority || b.conf - a.conf);
+
+    // Đồng thuận top 2 cùng hướng → tăng conf
+    if (signals.length >= 2 && signals[0].pred === signals[1].pred) {
+        const conf = Math.min(97, Math.round((signals[0].conf + signals[1].conf) / 2) + 5);
+        return {
+            pred: signals[0].pred, conf,
+            cau: signals[0].cau,
+            src: `✅ ${signals[0].cau} + ${signals[1].cau} đồng thuận`
+        };
+    }
+
+    return signals[0];
 }
 
 // ==================== PARSE ====================
@@ -200,10 +274,10 @@ const keyOK = q => q.key === VALID_KEY;
 
 app.get("/", async () => ({
     status: "active", admin: ADMIN,
-    thuat_toan: "CẦU CHU KỲ + BẢNG ĐIỂM",
+    thuat_toan: "BÃO → BẢNG ĐIỂM → MẶT-XÚC-XẮC → BỆT → CẦU CHU KỲ",
     phan_tich: `${N} phiên`,
-    cau_ho_tro: CAU_LIST.map(c => c.name),
-    bang_diem: MEO_DIEM,
+    cau_ho_tro: CAU_CYCLE.map(c => c.name),
+    bang_diem: BANG_DIEM,
     endpoints: {
         hu: `/api/taixiu/lc79?key=${VALID_KEY}`,
         md5: `/api/taixiumd5/lc79?key=${VALID_KEY}`,
@@ -235,16 +309,21 @@ app.get("/api/debug/:loai", async (req, rep) => {
     const h = req.params.loai === "md5" ? md5 : hu;
     if (!h.length) return rep.status(503).send({ error: "Chưa có dữ liệu" });
 
-    const c = byCau(h.slice(0, N));
-    const d = byDiem(Number(h[0].total));
+    const last = h[0];
+    const d = byDiem(Number(last.total));
+    const cm = cauMatXucXac(last.dice);
+    const bet = cauBet(h, last.result);
+    const cyc = byCycleCau(h.slice(0, N));
     const p = predict(h);
 
     return {
         bieu_do_cau: chart(h),
         streak: streaks(h.slice(0, N)).map(s => `${s.type === "Tài" ? "T" : "X"}${s.len}`).join("-"),
-        cau: c,
-        diem: d,
-        ket_hop: c && d ? (c.pred === d.pred ? "ĐỒNG THUẬN" : "XUNG ĐỘT") : (c ? "CHỈ CẦU" : d ? "CHỈ ĐIỂM" : "KHÔNG"),
+        tong_diem: last.total,
+        bang_diem: d,
+        mat_xuc_xac: cm,
+        bet: bet.pred ? bet : null,
+        cau_chu_ky: cyc,
         ket_qua: p
     };
 });
@@ -268,19 +347,24 @@ try {
 
 console.log(`
 ╔══════════════════════════════════════════════════════════╗
-║  🎯 TÀI XỈU LC79 - CẦU + BẢNG ĐIỂM                       ║
+║  🎯 TÀI XỈU LC79 - CẦU + BẢNG ĐIỂM + MẶT XÚC XẮC          ║
 ╠══════════════════════════════════════════════════════════╣
 ║  🚀 http://localhost:${PORT}                                 ║
 ║  🔑 KEY: ${VALID_KEY}                                       ║
 ║  👤 ADMIN: ${ADMIN}                                    ║
 ║                                                          ║
-║  🎲 CẦU HỖ TRỢ:                                          ║
+║  ⚡ THỨ TỰ: BÃO → BẢNG ĐIỂM → MẶT-XX → BỆT → CẦU CHU KỲ  ║
+║                                                          ║
+║  🎲 CẦU CHU KỲ HỖ TRỢ:                                   ║
 ║     1-1, 2-2, 3-3, 4-4                                   ║
 ║     1-2-1, 2-2-1, 1-2-2, 1-2-3, 3-1-2                    ║
 ║     1-3-1, 3-1-3                                         ║
-║     + Bệt (5-7 theo, ≥8 bẻ) + Bão (nghỉ)                 ║
 ║                                                          ║
-║  📊 BẢNG ĐIỂM: 3→18 (X3-X18, T11-T18)                    ║
+║  🎲 CẦU MẶT XÚC XẮC:                                     ║
+║     Kép Bé/Lớn, 2 mặt 6, Gánh, Tiến, Lùi                 ║
+║                                                          ║
+║  📊 BẢNG ĐIỂM: X4→Tài90%, X8→Tài85%, X10→Tài90%         ║
+║                T14→Xỉu95%, T17→Xỉu90%, T18→Xỉu100%      ║
 ║                                                          ║
 ║  📌 API:                                                 ║
 ║     HŨ : /api/taixiu/lc79?key=${VALID_KEY}              ║
