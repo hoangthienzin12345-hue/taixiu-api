@@ -11,13 +11,32 @@ const N = 15;
 const API_HU  = "https://wtx.tele68.com/v1/tx/lite-sessions?cp=R&cl=R&pf=web&at=83991213bfd4c554dc94bcd98979bdc5";
 const API_MD5 = "https://wtxmd52.tele68.com/v1/txmd5/sessions";
 
-// ==================== BẢNG MẸO ĐIỂM ====================
+// ==================== BẢNG ĐIỂM ====================
 const MEO_DIEM = {
-    3:["Xỉu",70], 4:["Tài",60], 5:["Tài",70], 6:["Xỉu",60],
-    7:["Tài",80], 8:["Xỉu",80], 9:["Xỉu",70], 10:["Tài",80],
-    11:["Xỉu",60], 12:["Tài",80], 13:["Tài",80], 14:["Xỉu",60],
-    15:["Xỉu",70], 16:["Tài",60], 17:["Xỉu",60], 18:["Xỉu",80]
+    3:  { p: "Xỉu", c: 70 }, 4:  { p: "Tài", c: 60 }, 5:  { p: "Tài", c: 70 },
+    6:  { p: "Xỉu", c: 60 }, 7:  { p: "Tài", c: 80 }, 8:  { p: "Xỉu", c: 80 },
+    9:  { p: "Xỉu", c: 70 }, 10: { p: "Tài", c: 80 }, 11: { p: "Xỉu", c: 60 },
+    12: { p: "Tài", c: 80 }, 13: { p: "Tài", c: 80 }, 14: { p: "Xỉu", c: 60 },
+    15: { p: "Xỉu", c: 70 }, 16: { p: "Tài", c: 60 }, 17: { p: "Xỉu", c: 60 },
+    18: { p: "Xỉu", c: 80 }
 };
+
+// ==================== DANH SÁCH CẦU CHU KỲ ====================
+// cycle: chuỗi độ dài streak đi theo thứ tự CŨ → MỚI
+// Ví dụ: [1,2,1] → streak 1 tay, 2 tay, 1 tay, 1 tay, 2 tay, 1 tay...
+const CAU_LIST = [
+    { cycle: [4],      name: "4-4",   conf: 70, minCheck: 2 },
+    { cycle: [3],      name: "3-3",   conf: 75, minCheck: 2 },
+    { cycle: [2],      name: "2-2",   conf: 80, minCheck: 2 },
+    { cycle: [1,2,1],  name: "1-2-1", conf: 75, minCheck: 6 },
+    { cycle: [1,2,2],  name: "1-2-2", conf: 75, minCheck: 6 },
+    { cycle: [2,2,1],  name: "2-2-1", conf: 75, minCheck: 6 },
+    { cycle: [1,2,3],  name: "1-2-3", conf: 72, minCheck: 6 },
+    { cycle: [3,1,2],  name: "3-1-2", conf: 72, minCheck: 6 },
+    { cycle: [1,3],    name: "1-3-1", conf: 73, minCheck: 4 },
+    { cycle: [3,1],    name: "3-1-3", conf: 73, minCheck: 4 },
+    { cycle: [1],      name: "1-1",   conf: 80, minCheck: 3 }
+];
 
 // ==================== CHUẨN HOÁ ====================
 const norm = (v, p) => {
@@ -29,16 +48,18 @@ const norm = (v, p) => {
     return Number(p) >= 11 ? "Tài" : "Xỉu";
 };
 
+const opp = x => x === "Tài" ? "Xỉu" : "Tài";
+
 // ==================== HELPERS ====================
-function streaks(h) {
-    if (!h?.length) return [];
-    const o = []; let t = h[0].result, l = 1;
-    for (let i = 1; i < h.length; i++) {
-        if (h[i].result === t) l++;
-        else { o.push({ type: t, len: l }); t = h[i].result; l = 1; }
+function streaks(hist) {
+    if (!hist?.length) return [];
+    const out = []; let t = hist[0].result, l = 1;
+    for (let i = 1; i < hist.length; i++) {
+        if (hist[i].result === t) l++;
+        else { out.push({ type: t, len: l }); t = hist[i].result; l = 1; }
     }
-    o.push({ type: t, len: l });
-    return o;
+    out.push({ type: t, len: l });
+    return out;
 }
 
 const chart = h => h?.length
@@ -46,69 +67,28 @@ const chart = h => h?.length
     : "";
 
 const bao = d => d?.[0] === d?.[1] && d?.[1] === d?.[2];
-const opp = r => r === "Tài" ? "Xỉu" : "Tài";
 
-// ==================== DETECTORS CẦU ====================
-function dUniform(st, len, name, cf, minCf) {
-    if (st.length < minCf + 1) return null;
-    for (let i = 1; i <= minCf; i++) if (st[i]?.len !== len) return null;
-    const c = st[minCf + 1]?.len === len ? cf : cf - 6;
+// ==================== MATCHER CẦU CHU KỲ ====================
+function matchCycle(st, cycle, name, conf, minCheck) {
+    const P = cycle.length;
+    if (st.length < minCheck + 1) return null;
+
+    // st[1] = streak vừa xong, st[2] trước đó...
+    // cycle[a,b,c] nghĩa là streak-length CŨ→MỚI: a,b,c,a,b,c...
+    // Nên: st[1]=cycle[P-1], st[2]=cycle[P-2], ...
+    for (let i = 1; i <= minCheck; i++) {
+        const expected = cycle[(P - (i % P)) % P];
+        if (st[i].len !== expected) return null;
+    }
+
+    const tgt = cycle[0]; // sau cycle[P-1] quay lại cycle[0]
     const cur = st[0];
-    if (cur.len < len) return { pred: cur.type, conf: c - 5, cau: name };
-    if (cur.len === len) return { pred: opp(cur.type), conf: c, cau: name };
-    return null;
-}
 
-function dAlt(st, A, B, name, cf) {
-    if (st.length < 5) return null;
-    let tgt = null;
-    if (st[1].len === A && st[2].len === B && st[3].len === A) tgt = B;
-    else if (st[1].len === B && st[2].len === A && st[3].len === B) tgt = A;
-    else return null;
-    const cur = st[0];
-    if (cur.len < tgt) return { pred: cur.type, conf: cf - 4, cau: name };
-    if (cur.len === tgt) return { pred: opp(cur.type), conf: cf, cau: name };
-    return null;
-}
-
-function dRising(st) {
-    if (st.length < 6) return null;
-    const l = st.slice(0, 6).map(s => s.len);
-    let seq = null;
-    if (l[1]===1 && l[2]===2 && l[3]===3 && l[4]===1 && l[5]===2) seq = [1,2,3];
-    else if (l[1]===3 && l[2]===2 && l[3]===1 && l[4]===3 && l[5]===2) seq = [3,2,1];
-    else return null;
-    const idx = seq.indexOf(st[1].len); if (idx === -1) return null;
-    const tgt = seq[(idx + 1) % seq.length];
-    const cur = st[0];
-    if (cur.len < tgt) return { pred: cur.type, conf: 70, cau: "1-2-3" };
-    if (cur.len === tgt) return { pred: opp(cur.type), conf: 72, cau: "1-2-3" };
-    return null;
-}
-
-function d131(st) {
-    if (st.length < 5) return null;
-    const l = st.slice(0, 5).map(s => s.len);
-    const a = l[1]===1 && l[2]===3 && l[3]===1 && l[4]===3;
-    const b = l[1]===3 && l[2]===1 && l[3]===3 && l[4]===1;
-    if (!a && !b) return null;
-    const tgt = st[1].len === 1 ? 3 : st[1].len === 3 ? 1 : null;
-    if (tgt === null) return null;
-    const cur = st[0], name = a ? "1-3-1" : "3-1-3";
-    if (cur.len < tgt) return { pred: cur.type, conf: 68, cau: name };
-    if (cur.len === tgt) return { pred: opp(cur.type), conf: 70, cau: name };
-    return null;
-}
-
-function dPeriod(h) {
-    if (h.length < 8) return null;
-    const r = h.map(x => x.result);
-    for (let P = 2; P <= 7; P++) {
-        if (r.length < P * 2) continue;
-        const len = Math.min(r.length - P, P * 3);
-        let m = 0;
-        for (let i = 0; i < len; i++) if (r[i] === r[i + P]) m++;
-        if (m / len >= 0.9) return { pred: r[P - 1], conf: 70, cau: `P${P}` };
+    if (cur.len < tgt) {
+        return { pred: cur.type, conf: conf - 3, cau: name, src: `cầu ${name} (${cur.len}/${tgt})` };
+    }
+    if (cur.len === tgt) {
+        return { pred: opp(cur.type), conf, cau: name, src: `cầu ${name} (đảo)` };
     }
     return null;
 }
@@ -120,67 +100,46 @@ function byCau(hist) {
     if (st.length < 3) return null;
     const cur = st[0];
 
-    if (cur.len >= 8) return { pred: opp(cur.type), conf: 70, cau: "bẻ bệt" };
-    if (cur.len >= 5) return { pred: cur.type, conf: 62, cau: "bệt" };
+    // 1. Bệt
+    if (cur.len >= 8) return { pred: opp(cur.type), conf: 70, cau: "bệt-bẻ", src: `bệt ${cur.len} tay (BẺ)` };
+    if (cur.len >= 5) return { pred: cur.type,     conf: 62, cau: "bệt-theo", src: `bệt ${cur.len} tay (THEO)` };
 
-    return dUniform(st, 1, "1-1", 80, 3)
-        || dUniform(st, 2, "2-2", 80, 2)
-        || dUniform(st, 3, "3-3", 75, 2)
-        || dAlt(st, 1, 2, "1-2", 75)
-        || dAlt(st, 2, 1, "2-1", 75)
-        || dAlt(st, 3, 1, "3-1", 73)
-        || dAlt(st, 1, 3, "1-3", 73)
-        || dAlt(st, 4, 1, "4-1", 70)
-        || dAlt(st, 1, 4, "1-4", 70)
-        || dRising(st)
-        || d131(st)
-        || dPeriod(hist);
+    // 2. Các cầu chu kỳ
+    for (const c of CAU_LIST) {
+        const r = matchCycle(st, c.cycle, c.name, c.conf, c.minCheck);
+        if (r) return r;
+    }
+    return null;
 }
 
 // ==================== DỰ ĐOÁN THEO ĐIỂM ====================
 function byDiem(total) {
     const e = MEO_DIEM[total];
-    return e ? { pred: e[0], conf: e[1], cau: `điểm ${total}` } : null;
+    return e ? { pred: e.p, conf: e.c, cau: `điểm ${total}`, src: `bảng điểm ${total}` } : null;
 }
 
-// ==================== ESM (Exponential Smoothing) ====================
-function esm(hist, alpha = 0.3) {
-    if (hist.length < 5) return null;
-    const series = hist.slice().reverse().map(h => h.result === "Tài" ? 1 : 0);
-    let s = series[0];
-    for (let i = 1; i < series.length; i++) s = alpha * series[i] + (1 - alpha) * s;
-    const pred = s >= 0.5 ? "Tài" : "Xỉu";
-    const conf = Math.min(85, Math.round(50 + Math.abs(s - 0.5) * 70));
-    return { pred, conf, cau: "ESM" };
-}
-
-// ==================== DỰ ĐOÁN KẾT HỢP ====================
+// ==================== KẾT HỢP CẦU + ĐIỂM ====================
 function predict(hist) {
     const last = hist[0];
-    if (bao(last.dice)) return { pred: "NGHỈ", conf: 0, cau: "bão" };
+    if (bao(last.dice)) return { pred: "NGHỈ", conf: 0, cau: "bão", src: "bão → nghỉ" };
 
-    const signals = [];
     const c = byCau(hist.slice(0, N));
-    if (c) signals.push({ ...c, w: 0.50 });
-    const d = byDiem(last.total);
-    if (d) signals.push({ ...d, w: 0.30 });
-    const e = esm(hist.slice(0, 20));
-    if (e) signals.push({ ...e, w: 0.20 });
+    const d = byDiem(Number(last.total));
 
-    if (!signals.length) {
-        return { pred: opp(last.result), conf: 52, cau: "-" };
+    // Cả 2 đồng thuận → tăng conf
+    if (c && d && c.pred === d.pred) {
+        const conf = Math.min(95, Math.round((c.conf + d.conf) / 2) + 8);
+        return { pred: c.pred, conf, cau: c.cau, src: `✅ cầu + điểm đồng thuận` };
     }
+    // Xung đột → chọn cái conf cao hơn
+    if (c && d && c.pred !== d.pred) {
+        if (c.conf >= d.conf) return { ...c, src: `⚔️ cầu thắng (${c.conf}% vs ${d.conf}%)` };
+        return { ...d, src: `⚔️ điểm thắng (${d.conf}% vs ${c.conf}%)` };
+    }
+    if (c) return c;
+    if (d) return d;
 
-    const totalW = signals.reduce((s, x) => s + x.w, 0);
-    const score = { "Tài": 0, "Xỉu": 0 };
-    for (const s of signals) score[s.pred] += (s.w / totalW) * s.conf;
-
-    const pred = score["Tài"] >= score["Xỉu"] ? "Tài" : "Xỉu";
-    const conf = Math.min(88, Math.round(score[pred]));
-
-    // Cầu chính để hiển thị: ưu tiên cầu, sau đó điểm, cuối là ESM
-    const mainCau = c ? c.cau : d ? d.cau : "ESM";
-    return { pred, conf, cau: mainCau };
+    return { pred: opp(last.result), conf: 52, cau: "-", src: "đảo mặc định" };
 }
 
 // ==================== PARSE ====================
@@ -203,33 +162,35 @@ async function tick(url, isMd5) {
         if (!arr.length) return;
         const latest = arr[0].session;
         const cur = isMd5 ? idMd5 : idHu;
+        const tag = isMd5 ? "MD5" : "HŨ";
+
         if (!cur) {
             if (isMd5) { md5 = arr; idMd5 = latest; } else { hu = arr; idHu = latest; }
-            console.log(`✅ [${isMd5 ? "MD5" : "HŨ"}] ${arr.length} phiên | ${latest} (${arr[0].result})`);
+            console.log(`✅ [${tag}] ${arr.length} phiên | ${latest} (${arr[0].result})`);
         } else if (latest > cur) {
             const news = arr.filter(r => r.session > cur);
             const target = isMd5 ? md5 : hu;
             for (let i = news.length - 1; i >= 0; i--) target.unshift(news[i]);
             if (target.length > 500) target.length = 450;
             if (isMd5) idMd5 = latest; else idHu = latest;
-            console.log(`🆕 [${isMd5 ? "MD5" : "HŨ"}] +${news.length} | ${latest} (${arr[0].result})`);
+            console.log(`🆕 [${tag}] +${news.length} | ${latest} (${arr[0].result})`);
         }
-    } catch (e) { console.error(`❌ ${isMd5 ? "MD5" : "HŨ"}:`, e.message); }
+    } catch (e) { console.error(`❌ [${isMd5 ? "MD5" : "HŨ"}]:`, e.message); }
 }
 
 // ==================== RESPONSE ====================
 function resp(hist) {
     const l = hist[0], p = predict(hist);
     return {
-        id: ADMIN,
-        phien_truoc: l.session,
-        ket_qua: l.result.toLowerCase(),
-        xuc_xac: `${l.dice[0]}-${l.dice[1]}-${l.dice[2]}`,
-        phien_hien_tai: l.session + 1,
-        du_doan: p.pred === "Tài" ? "tài" : p.pred === "Xỉu" ? "xỉu" : "nghỉ",
-        ty_le: `${p.conf}%`,
-        cau: p.cau || "-"
-    }
+        "Id": ADMIN,
+        "Phien_truoc": l.session,
+        "Xuc_xac": `${l.dice[0]} - ${l.dice[1]} - ${l.dice[2]}`,
+        "Ket_qua": l.result.toLowerCase(),
+        "Phien_nay": l.session + 1,
+        "Du_doan": p.pred === "Tài" ? "tài" : p.pred === "Xỉu" ? "xỉu" : "nghỉ",
+        "Ty_le": `${p.conf}%`,
+        "Cau": p.cau || "-"
+    };
 }
 
 // ==================== SERVER ====================
@@ -239,10 +200,15 @@ const keyOK = q => q.key === VALID_KEY;
 
 app.get("/", async () => ({
     status: "active", admin: ADMIN,
-    thuat_toan: "CẦU(50%) + MẸO ĐIỂM(30%) + ESM(20%)",
+    thuat_toan: "CẦU CHU KỲ + BẢNG ĐIỂM",
+    phan_tich: `${N} phiên`,
+    cau_ho_tro: CAU_LIST.map(c => c.name),
+    bang_diem: MEO_DIEM,
     endpoints: {
         hu: `/api/taixiu/lc79?key=${VALID_KEY}`,
-        md5: `/api/taixiumd5/lc79?key=${VALID_KEY}`
+        md5: `/api/taixiumd5/lc79?key=${VALID_KEY}`,
+        debug_hu: `/api/debug/hu?key=${VALID_KEY}`,
+        debug_md5: `/api/debug/md5?key=${VALID_KEY}`
     }
 }));
 
@@ -254,17 +220,71 @@ app.get("/api/taixiu/:g", async (req, rep) =>
 app.get("/api/taixiumd5/:g", async (req, rep) =>
     keyOK(req.query) ? send(md5, rep) : rep.status(401).send({ error: `Sai key! Ib ${ADMIN}` }));
 
+app.get("/api/taixiu/:g/history", async (req, rep) =>
+    keyOK(req.query)
+        ? hu.slice(0, N).map(i => ({ phien: i.session, xuc_xac: i.dice, tong: i.total, ket_qua: i.result.toLowerCase() }))
+        : rep.status(401).send({ error: "Sai key" }));
+
+app.get("/api/taixiumd5/:g/history", async (req, rep) =>
+    keyOK(req.query)
+        ? md5.slice(0, N).map(i => ({ phien: i.session, xuc_xac: i.dice, tong: i.total, ket_qua: i.result.toLowerCase() }))
+        : rep.status(401).send({ error: "Sai key" }));
+
+app.get("/api/debug/:loai", async (req, rep) => {
+    if (!keyOK(req.query)) return rep.status(401).send({ error: "Sai key" });
+    const h = req.params.loai === "md5" ? md5 : hu;
+    if (!h.length) return rep.status(503).send({ error: "Chưa có dữ liệu" });
+
+    const c = byCau(h.slice(0, N));
+    const d = byDiem(Number(h[0].total));
+    const p = predict(h);
+
+    return {
+        bieu_do_cau: chart(h),
+        streak: streaks(h.slice(0, N)).map(s => `${s.type === "Tài" ? "T" : "X"}${s.len}`).join("-"),
+        cau: c,
+        diem: d,
+        ket_hop: c && d ? (c.pred === d.pred ? "ĐỒNG THUẬN" : "XUNG ĐỘT") : (c ? "CHỈ CẦU" : d ? "CHỈ ĐIỂM" : "KHÔNG"),
+        ket_qua: p
+    };
+});
+
+app.get("/check-key", async req =>
+    req.query.key === VALID_KEY
+        ? { status: "success", message: "KEY HỢP LỆ", admin: ADMIN }
+        : { status: "error", message: `Sai key! Ib ${ADMIN}` });
+
 // ==================== START ====================
 await Promise.all([tick(API_HU, false), tick(API_MD5, true)]);
 setInterval(() => tick(API_HU, false), 5000);
 setInterval(() => tick(API_MD5, true), 5000);
 
-await app.listen({ port: PORT, host: "0.0.0.0" });
+try {
+    await app.listen({ port: PORT, host: "0.0.0.0" });
+} catch (err) {
+    console.error("❌ Lỗi khởi động:", err.message);
+    process.exit(1);
+}
+
 console.log(`
-╔══════════════════════════════════════════════════════╗
-║  🎯 TÀI XỈU - CẦU + MẸO ĐIỂM + ESM                    ║
-║  🚀 http://localhost:${PORT}                             ║
-║  🔑 ${VALID_KEY}   👤 ${ADMIN}              ║
-║  ⚖️  CẦU 50% | ĐIỂM 30% | ESM 20%                    ║
-╚══════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════╗
+║  🎯 TÀI XỈU LC79 - CẦU + BẢNG ĐIỂM                       ║
+╠══════════════════════════════════════════════════════════╣
+║  🚀 http://localhost:${PORT}                                 ║
+║  🔑 KEY: ${VALID_KEY}                                       ║
+║  👤 ADMIN: ${ADMIN}                                    ║
+║                                                          ║
+║  🎲 CẦU HỖ TRỢ:                                          ║
+║     1-1, 2-2, 3-3, 4-4                                   ║
+║     1-2-1, 2-2-1, 1-2-2, 1-2-3, 3-1-2                    ║
+║     1-3-1, 3-1-3                                         ║
+║     + Bệt (5-7 theo, ≥8 bẻ) + Bão (nghỉ)                 ║
+║                                                          ║
+║  📊 BẢNG ĐIỂM: 3→18 (X3-X18, T11-T18)                    ║
+║                                                          ║
+║  📌 API:                                                 ║
+║     HŨ : /api/taixiu/lc79?key=${VALID_KEY}              ║
+║     MD5: /api/taixiumd5/lc79?key=${VALID_KEY}           ║
+║     DEBUG: /api/debug/hu?key=${VALID_KEY}               ║
+╚══════════════════════════════════════════════════════════╝
 `);
