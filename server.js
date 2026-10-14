@@ -1706,11 +1706,6 @@ function resp(hist, eng) {
         bieu_do_cau: chart(hist),
         du_doan: duDoan,
         do_tin_cay: `${p.conf}%`,
-        cau_phat_hien: p.cau || "-",
-        nguon: p.src || "-",
-        regime: p.regime || "-",
-        top_cau: p.top || [],
-        so_cau_hoat_dong: (p.allBase || 0) + (p.allMeta || 0),
     };
 }
 
