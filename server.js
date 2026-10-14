@@ -7,14 +7,11 @@ const PORT = process.env.PORT || 3000;
 const VALID_KEY = "Thien456";
 const ADMIN = "@ADMNLc79";
 
-// ==================== API URLs ====================
-const API_URL_HU = "https://wtx.tele68.com/v1/tx/lite-sessions?cp=R&cl=R&pf=web&at=83991213bfd4c554dc94bcd98979bdc5";
+const API_URL_HU  = "https://wtx.tele68.com/v1/tx/lite-sessions?cp=R&cl=R&pf=web&at=83991213bfd4c554dc94bcd98979bdc5";
 const API_URL_MD5 = "https://wtxmd52.tele68.com/v1/txmd5/sessions";
 
 // ==================== BẢNG MẸO TỔNG ĐIỂM ====================
-// Phân tích từ 501 phiên (341 + 160):
-// - Điểm 3-10 luôn Xỉu, điểm 11-18 luôn Tài
-// - % dưới đây = xác suất PHIÊN SAU ĐẢO chiều theo Markov chain
+// Tổng điểm phiên trước → dự đoán phiên sau
 const BANG_DIEM = {
     3:  { pred: "Xỉu", conf: 70 },
     4:  { pred: "Tài", conf: 60 },
@@ -34,27 +31,34 @@ const BANG_DIEM = {
     18: { pred: "Xỉu", conf: 80 }
 };
 
+// Chuỗi hiển thị dạng "X3 - XỈU 70% | X4 - TÀI 60% | ..."
+const BANG_DIEM_STR = Object.entries(BANG_DIEM)
+    .map(([pt, v]) => `${Number(pt) >= 11 ? "T" : "X"}${pt} - ${v.pred.toUpperCase()} ${v.conf}%`)
+    .join(" | ");
+
 // ==================== BẢNG MẸO CẦU ====================
 const BANG_CAU = {
-    "1-1": { mo_ta: "T-X-T-X-T-X (đảo liên tục)", quy_tac: "Mỗi phiên đổi chiều", conf: 78 },
-    "1-2": { mo_ta: "T-XX-T-XX (1 rồi 2)", quy_tac: "Đủ 1 đổi, đủ 2 đổi tiếp", conf: 70 },
-    "2-1": { mo_ta: "TT-X-TT-X (2 rồi 1)", quy_tac: "Đủ 2 đổi, đủ 1 đổi tiếp", conf: 70 },
-    "2-2": { mo_ta: "TT-XX-TT-XX", quy_tac: "Đủ 2 thì đổi", conf: 78 },
-    "3-3": { mo_ta: "TTT-XXX-TTT-XXX", quy_tac: "Đủ 3 thì đổi", conf: 72 },
-    "bệt": { mo_ta: "Chuỗi dài cùng chiều", quy_tac: "Theo đến khi gãy", conf: 68 }
+    "1-1":   { mo_ta: "T-X-T-X-T-X",         quy_tac: "Mỗi phiên đổi chiều (1-1)",                 conf: 80 },
+    "1-2":   { mo_ta: "T-XX-T-XX",           quy_tac: "1 rồi 2, đủ 1 đổi, đủ 2 đổi tiếp",           conf: 75 },
+    "2-1":   { mo_ta: "TT-X-TT-X",           quy_tac: "2 rồi 1, đủ 2 đổi, đủ 1 đổi tiếp",           conf: 75 },
+    "2-2":   { mo_ta: "TT-XX-TT-XX",         quy_tac: "Đủ 2 thì đổi",                              conf: 80 },
+    "3-1":   { mo_ta: "TTT-X-TTT-X",         quy_tac: "3 tài rồi 1 xỉu (hoặc ngược lại)",           conf: 73 },
+    "1-3":   { mo_ta: "T-XXX-T-XXX",         quy_tac: "1 tài rồi 3 xỉu (hoặc ngược lại)",           conf: 73 },
+    "4-1":   { mo_ta: "TTTT-X-TTTT-X",       quy_tac: "4 tài rồi 1 xỉu (hoặc ngược lại)",           conf: 70 },
+    "1-4":   { mo_ta: "T-XXXX-T-XXXX",       quy_tac: "1 tài rồi 4 xỉu (hoặc ngược lại)",           conf: 70 },
+    "3-3":   { mo_ta: "TTT-XXX-TTT-XXX",     quy_tac: "Đủ 3 thì đổi",                              conf: 75 },
+    "bệt":   { mo_ta: "Bệt 5-11 tay",        quy_tac: "Theo bệt đến khi gãy",                      conf: 62 },
+    "bệt12+":{ mo_ta: "Bệt từ 12 tay trở lên",quy_tac: "Bệt quá dài, không bẻ, đợi gãy mới thôi",   conf: 75 }
 };
 
-// ==================== XỬ LÝ BÃO ====================
+// ==================== HÀM HỖ TRỢ ====================
 function xuLyBao(dice) {
     if (!dice || dice.length < 3) return null;
-    if (dice[0] === dice[1] && dice[1] === dice[2]) {
-        return { pred: "BÃO", conf: 0 };
-    }
+    if (dice[0] === dice[1] && dice[1] === dice[2]) return { pred: "BÃO", conf: 0 };
     return null;
 }
 
-// ==================== PHÂN TÍCH STREAK ====================
-// Trả về mảng [{type, len}] với phần tử [0] = streak hiện tại (mới nhất)
+// Trả về mảng [{type, len}] — phần tử [0] là streak mới nhất (hiện tại)
 function analyzeStreaks(history) {
     if (!history || history.length === 0) return [];
     const streaks = [];
@@ -73,8 +77,7 @@ function analyzeStreaks(history) {
     return streaks;
 }
 
-// ==================== PHÁT HIỆN CHU KỲ (Period Detection) ====================
-// Tìm chu kỳ P (2..7) sao cho r[i] == r[i+P] với >=90% số điểm kiểm tra
+// Phát hiện chu kỳ P (2..7) khớp >= 90%
 function detectPeriod(results) {
     if (results.length < 10) return null;
     for (let P = 2; P <= 7; P++) {
@@ -85,102 +88,120 @@ function detectPeriod(results) {
             if (results[i] === results[i + P]) matches++;
         }
         const ratio = matches / checkLen;
-        if (ratio >= 0.9) {
-            return { period: P, ratio };
-        }
+        if (ratio >= 0.9) return { period: P, ratio };
     }
     return null;
 }
 
-// ==================== DỰ ĐOÁN THEO CẦU ====================
+// Cầu có độ dài đồng nhất (1-1, 2-2, 3-3)
+function detectUniform(streaks, len, cauName, conf) {
+    if (streaks.length < 3) return null;
+    const l = streaks.slice(0, 4).map(s => s.len);
+    if (l[1] !== len || l[2] !== len) return null;
+    const confirmed = l[3] === len;
+    const baseConf = confirmed ? conf : conf - 6;
+
+    const curLen  = streaks[0].len;
+    const curType = streaks[0].type;
+    const opposite = curType === "Tài" ? "Xỉu" : "Tài";
+
+    if (curLen < len) {
+        return { pred: curType, conf: baseConf - 5, cau: cauName,
+                 source: `cầu ${cauName} (đang chạy ${curLen}/${len})` };
+    }
+    if (curLen === len) {
+        return { pred: opposite, conf: baseConf, cau: cauName,
+                 source: `cầu ${cauName} (hoàn tất nhịp ${len})` };
+    }
+    return null;
+}
+
+// Cầu xen kẽ 2 độ dài (1-2, 2-1, 3-1, 1-3, 4-1, 1-4)
+function detectAlternating(streaks, lenA, lenB, cauName, conf) {
+    if (streaks.length < 5) return null;
+    const l = streaks.slice(0, 6).map(s => s.len);
+
+    let phaseLen = null;
+    if (l[1] === lenA && l[2] === lenB && l[3] === lenA && l[4] === lenB) phaseLen = lenA;
+    else if (l[1] === lenB && l[2] === lenA && l[3] === lenB && l[4] === lenA) phaseLen = lenB;
+    else return null;
+
+    const curLen   = streaks[0].len;
+    const curType  = streaks[0].type;
+    const opposite = curType === "Tài" ? "Xỉu" : "Tài";
+
+    if (curLen < phaseLen) {
+        return { pred: curType, conf: conf - 4, cau: cauName,
+                 source: `cầu ${cauName} (đang chạy ${curLen}/${phaseLen})` };
+    }
+    if (curLen === phaseLen) {
+        return { pred: opposite, conf, cau: cauName,
+                 source: `cầu ${cauName} (hoàn tất nhịp ${phaseLen})` };
+    }
+    return null;
+}
+
+// ==================== DỰ ĐOÁN THEO CẦU (ƯU TIÊN 1) ====================
 function predictByCau(history) {
-    if (!history || history.length < 6) return null;
+    if (!history || history.length < 4) return null;
 
-    const results = history.map(h => h.result_vn); // [mới nhất, ...]
+    const streaks = analyzeStreaks(history);
+    if (streaks.length < 3) return null;
 
-    // ---- ƯU TIÊN 1: PHÁT HIỆN CHU KỲ ----
+    const cur = streaks[0];
+
+    // --- Bệt 12+ : cực đoan, theo đến khi gãy ---
+    if (cur.len >= 12) {
+        return {
+            pred: cur.type, conf: 75, cau: "bệt12+",
+            source: `bệt 12+ tay (${cur.len} tay) - theo đến khi gãy`
+        };
+    }
+
+    // --- Cầu đồng nhất ---
+    let r;
+    r = detectUniform(streaks, 1, "1-1", 80); if (r) return r;
+    r = detectUniform(streaks, 2, "2-2", 80); if (r) return r;
+    r = detectUniform(streaks, 3, "3-3", 75); if (r) return r;
+
+    // --- Cầu xen kẽ ---
+    r = detectAlternating(streaks, 1, 2, "1-2", 75); if (r) return r;
+    r = detectAlternating(streaks, 2, 1, "2-1", 75); if (r) return r;
+    r = detectAlternating(streaks, 3, 1, "3-1", 73); if (r) return r;
+    r = detectAlternating(streaks, 1, 3, "1-3", 73); if (r) return r;
+    r = detectAlternating(streaks, 4, 1, "4-1", 70); if (r) return r;
+    r = detectAlternating(streaks, 1, 4, "1-4", 70); if (r) return r;
+
+    // --- Bệt thường (5-11 tay) ---
+    if (cur.len >= 5) {
+        return {
+            pred: cur.type, conf: 62, cau: "bệt",
+            source: `cầu bệt ${cur.len} tay (theo)`
+        };
+    }
+
+    // --- Chu kỳ (fallback) ---
+    const results = history.map(h => h.result_vn);
     const per = detectPeriod(results);
     if (per) {
         const P = per.period;
-        const nextResult = results[P - 1]; // phần tử tiếp theo trong chu kỳ
-
-        let cauName, conf;
+        const nextResult = results[P - 1];
+        let cauName = `tuần hoàn ${P}`;
+        let conf = 70;
         if (P === 2)      { cauName = "1-1"; conf = 80; }
-        else if (P === 3) { cauName = "1-2 hoặc 2-1"; conf = 72; }
+        else if (P === 3) { cauName = "1-2/2-1"; conf = 73; }
         else if (P === 4) { cauName = "2-2"; conf = 78; }
         else if (P === 6) { cauName = "3-3"; conf = 74; }
-        else              { cauName = `tuần hoàn ${P}`; conf = 68; }
-
         return {
-            pred: nextResult,
-            conf,
-            cau: cauName,
+            pred: nextResult, conf, cau: cauName,
             source: `cầu tuần hoàn P=${P} (khớp ${Math.round(per.ratio * 100)}%)`
         };
     }
 
-    // ---- ƯU TIÊN 2: PHÂN TÍCH STREAK ----
-    const streaks = analyzeStreaks(history);
-    if (streaks.length < 2) return null;
-
-    const cur = streaks[0];
-    const curType = cur.type;
-    const opposite = curType === "Tài" ? "Xỉu" : "Tài";
-    const prev = streaks[1];
-    const prev2 = streaks[2];
-    const prev3 = streaks[3];
-
-    // Cầu 1-1 (cần 3+ streak len=1 liên tiếp)
-    if (prev && prev2 && prev.len === 1 && prev2.len === 1) {
-        const isConfirmed = prev3 && prev3.len === 1;
-        if (cur.len === 1) {
-            return {
-                pred: opposite,
-                conf: isConfirmed ? 78 : 66,
-                cau: "1-1",
-                source: isConfirmed ? "cầu 1-1 xác nhận" : "cầu 1-1 (chưa xác nhận)"
-            };
-        }
-    }
-
-    // Cầu 2-2
-    if (prev && prev.len === 2 && prev2 && prev2.len === 2) {
-        if (cur.len === 2) return { pred: opposite, conf: 78, cau: "2-2", source: "cầu 2-2" };
-        if (cur.len === 1) return { pred: curType,  conf: 72, cau: "2-2", source: "cầu 2-2 (bước 1/2)" };
-    }
-
-    // Cầu 3-3
-    if (prev && prev.len === 3 && prev2 && prev2.len === 3) {
-        if (cur.len === 3) return { pred: opposite, conf: 74, cau: "3-3", source: "cầu 3-3" };
-        if (cur.len < 3)   return { pred: curType,  conf: 70, cau: "3-3", source: "cầu 3-3" };
-    }
-
-    // Cầu 1-2 (mẫu recent: 2,1,2 → cur là đầu phase 1)
-    if (prev && prev2 && prev3 &&
-        prev.len === 2 && prev2.len === 1 && prev3.len === 2) {
-        if (cur.len === 1) return { pred: curType,  conf: 68, cau: "1-2", source: "cầu 1-2" };
-        if (cur.len === 2) return { pred: opposite, conf: 72, cau: "1-2", source: "cầu 1-2" };
-    }
-
-    // Cầu 2-1 (mẫu recent: 1,2,1 → cur là đầu phase 2)
-    if (prev && prev2 && prev3 &&
-        prev.len === 1 && prev2.len === 2 && prev3.len === 1) {
-        if (cur.len === 1) return { pred: opposite, conf: 68, cau: "2-1", source: "cầu 2-1" };
-        if (cur.len === 2) return { pred: curType,  conf: 72, cau: "2-1", source: "cầu 2-1" };
-    }
-
-    // Bệt cầu (streak dài)
-    if (cur.len >= 5) {
-        return { pred: opposite, conf: 62, cau: "bệt-bẻ", source: "cầu bệt (bẻ)" };
-    }
-    if (cur.len >= 3 && prev && prev.len >= 3) {
-        return { pred: curType, conf: 68, cau: "bệt", source: "cầu bệt" };
-    }
-
     return null;
 }
 
-// ==================== DỰ ĐOÁN THEO ĐIỂM ====================
+// ==================== DỰ ĐOÁN THEO ĐIỂM (ƯU TIÊN 2) ====================
 function predictByPoint(lastTotal) {
     const entry = BANG_DIEM[lastTotal];
     if (!entry) return null;
@@ -193,13 +214,13 @@ function predictByPoint(lastTotal) {
 }
 
 // ==================== DỰ ĐOÁN TỔNG HỢP ====================
+// Ưu tiên: BÃO > CẦU > ĐIỂM > ĐẢO
 function predict(history) {
     if (!history || history.length < 1) {
         return { prediction: "Xỉu", confidence: 50, source: "mặc định", cau: "-" };
     }
 
     const last = history[0];
-    const lastTotal = Number(last.total);
 
     // BÃO → nghỉ
     const bao = xuLyBao(last.dice);
@@ -207,36 +228,52 @@ function predict(history) {
         return { prediction: bao.pred, confidence: bao.conf, source: "bão", cau: "bão" };
     }
 
-    const pointPred = predictByPoint(lastTotal);
-    const cauPred = predictByCau(history);
+    const cauPred   = predictByCau(history);
+    const pointPred = predictByPoint(Number(last.total));
 
-    // ---- KẾT HỢP 2 NGUỒN ----
-    if (pointPred && cauPred) {
-        if (pointPred.pred === cauPred.pred) {
-            // ĐỒNG THUẬN → tăng độ tin cậy
-            const avg = Math.round((pointPred.conf + cauPred.conf) / 2);
-            const conf = Math.min(95, avg + 12);
+    // --- CẦU có + ĐIỂM có ---
+    if (cauPred && pointPred) {
+        if (cauPred.pred === pointPred.pred) {
+            // Đồng thuận → boost
+            const avg = Math.round((cauPred.conf + pointPred.conf) / 2);
+            const conf = Math.min(95, avg + 10);
             return {
-                prediction: pointPred.pred,
+                prediction: cauPred.pred,
                 confidence: conf,
                 cau: cauPred.cau,
                 source: `✅ ${cauPred.source} + ${pointPred.source} (ĐỒNG THUẬN)`
             };
-        } else {
-            // XUNG ĐỘT → ưu tiên cầu
-            return {
-                prediction: cauPred.pred,
-                confidence: Math.max(55, cauPred.conf - 3),
-                cau: cauPred.cau,
-                source: `⚠️ ${cauPred.source} (xung đột ${pointPred.source})`
-            };
         }
+        // Xung đột → ưu tiên cầu
+        return {
+            prediction: cauPred.pred,
+            confidence: Math.max(55, cauPred.conf - 3),
+            cau: cauPred.cau,
+            source: `⚠️ ${cauPred.source} (xung đột ${pointPred.source})`
+        };
     }
 
-    if (cauPred) return { prediction: cauPred.pred, confidence: cauPred.conf, source: cauPred.source, cau: cauPred.cau };
-    if (pointPred) return { prediction: pointPred.pred, confidence: pointPred.conf, source: pointPred.source, cau: pointPred.cau };
+    // --- Chỉ có cầu ---
+    if (cauPred) {
+        return {
+            prediction: cauPred.pred,
+            confidence: cauPred.conf,
+            cau: cauPred.cau,
+            source: cauPred.source
+        };
+    }
 
-    // Fallback: đảo chiều phiên trước
+    // --- Chỉ có điểm ---
+    if (pointPred) {
+        return {
+            prediction: pointPred.pred,
+            confidence: pointPred.conf,
+            cau: pointPred.cau,
+            source: pointPred.source
+        };
+    }
+
+    // --- Fallback: đảo phiên trước ---
     const opposite = last.result_vn === "Tài" ? "Xỉu" : "Tài";
     return { prediction: opposite, confidence: 52, source: "mặc định (đảo)", cau: "-" };
 }
@@ -244,28 +281,24 @@ function predict(history) {
 // ==================== PARSE DỮ LIỆU ====================
 function parseLinesHu(data) {
     if (!data || !Array.isArray(data.list)) return [];
-    return data.list
-        .map(item => ({
-            session: item.id,
-            dice: item.dices,
-            total: Number(item.point),
-            result: Number(item.point) >= 11 ? "Tài" : "Xỉu",
-            result_vn: Number(item.point) >= 11 ? "Tài" : "Xỉu"
-        }))
-        .sort((a, b) => b.session - a.session);
+    return data.list.map(item => ({
+        session: item.id,
+        dice: item.dices,
+        total: Number(item.point),
+        result: Number(item.point) >= 11 ? "Tài" : "Xỉu",
+        result_vn: Number(item.point) >= 11 ? "Tài" : "Xỉu"
+    })).sort((a, b) => b.session - a.session);
 }
 
 function parseLinesMd5(data) {
     if (!data || !Array.isArray(data.list)) return [];
-    return data.list
-        .map(item => ({
-            session: item.id,
-            dice: item.dices,
-            total: Number(item.point),
-            result: item.resultTruyenThong === 'Tài' ? "Tài" : "Xỉu",
-            result_vn: item.resultTruyenThong || (Number(item.point) >= 11 ? "Tài" : "Xỉu")
-        }))
-        .sort((a, b) => b.session - a.session);
+    return data.list.map(item => ({
+        session: item.id,
+        dice: item.dices,
+        total: Number(item.point),
+        result: item.resultTruyenThong === 'Tài' ? "Tài" : "Xỉu",
+        result_vn: item.resultTruyenThong || (Number(item.point) >= 11 ? "Tài" : "Xỉu")
+    })).sort((a, b) => b.session - a.session);
 }
 
 // ==================== GLOBAL STATE ====================
@@ -361,7 +394,8 @@ await app.register(cors, { origin: "*" });
 app.get("/", async () => ({
     status: "active",
     admin: ADMIN,
-    algorithm: "🎲 TÀI XỈU - CẦU + BẢNG ĐIỂM (KẾT HỢP 2 TẦNG) 🎲",
+    algorithm: "🎲 TÀI XỈU - ƯU TIÊN CẦU + BẢNG ĐIỂM 🎲",
+    uu_tien: "BÃO > CẦU > BẢNG ĐIỂM > ĐẢO",
     endpoints: {
         hu: "/api/taixiu/{game}?key=Thien456",
         md5: "/api/taixiumd5/{game}?key=Thien456",
@@ -438,8 +472,9 @@ app.get("/api/bang-diem", async (request, reply) => {
     const k = checkKey(request.query);
     if (!k.valid) return reply.status(401).send({ error: k.error });
     return {
-        title: "📊 BẢNG MẸO TỔNG ĐIỂM (Markov Chain)",
+        title: "📊 BẢNG MẸO TỔNG ĐIỂM",
         admin: ADMIN,
+        hien_thi: BANG_DIEM_STR,
         bang: Object.fromEntries(
             Object.entries(BANG_DIEM).map(([pt, v]) => [pt, `${v.pred.toUpperCase()} ${v.conf}%`])
         ),
@@ -453,15 +488,11 @@ app.get("/api/bang-cau", async (request, reply) => {
     const k = checkKey(request.query);
     if (!k.valid) return reply.status(401).send({ error: k.error });
     return {
-        title: "📊 BẢNG MẸO CẦU (Period + Streak Detection)",
+        title: "📊 BẢNG MẸO CẦU",
         admin: ADMIN,
         bang: BANG_CAU,
-        thuat_toan: {
-            buoc_1: "Quét lịch sử, tìm chu kỳ P (2-7) khớp ≥90%",
-            buoc_2: "Nếu có chu kỳ → dự đoán theo chu kỳ (conf 68-80%)",
-            buoc_3: "Nếu không → phân tích streak (1-1, 2-2, 3-3, 1-2, 2-1, bệt)",
-            buoc_4: "Kết hợp với bảng điểm → đồng thuận +12% conf, xung đột ưu tiên cầu"
-        }
+        uu_tien: "1. Bệt 12+  →  2. Cầu đồng nhất (1-1, 2-2, 3-3)  →  3. Cầu xen kẽ (1-2, 2-1, 3-1, 1-3, 4-1, 1-4)  →  4. Bệt thường  →  5. Chu kỳ",
+        ghi_chu: "Cầu được ưu tiên trước. Nếu không có cầu → dùng bảng điểm."
     };
 });
 
@@ -512,7 +543,7 @@ const start = async () => {
 
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
-║     TÀI XỈU - CẦU + BẢNG ĐIỂM (KẾT HỢP 2 TẦNG)              ║
+║     TÀI XỈU - ƯU TIÊN CẦU + BẢNG ĐIỂM                       ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  🚀 http://localhost:${PORT}                                    ║
 ║  🔑 KEY: ${VALID_KEY}                                          ║
@@ -523,8 +554,9 @@ const start = async () => {
 ║     MD5:  /api/taixiumd5/lc79?key=${VALID_KEY}              ║
 ║     DEBUG: /api/debug/hu?key=${VALID_KEY}                   ║
 ║     BẢNG CẦU: /api/bang-cau?key=${VALID_KEY}                ║
+║     BẢNG ĐIỂM: /api/bang-diem?key=${VALID_KEY}              ║
 ╚══════════════════════════════════════════════════════════════╝
 `);
 };
 
-start();                                             
+start();
