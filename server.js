@@ -224,11 +224,12 @@ function resp(hist) {
         id: ADMIN,
         phien_truoc: l.session,
         ket_qua: l.result.toLowerCase(),
+        xuc_xac: `${l.dice[0]}-${l.dice[1]}-${l.dice[2]}`,
         phien_hien_tai: l.session + 1,
         du_doan: p.pred === "Tài" ? "tài" : p.pred === "Xỉu" ? "xỉu" : "nghỉ",
         ty_le: `${p.conf}%`,
         cau: p.cau || "-"
-    };
+    }
 }
 
 // ==================== SERVER ====================
