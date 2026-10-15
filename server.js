@@ -4,7 +4,6 @@ import cors from "@fastify/cors";
 const PORT      = process.env.PORT || 3000;
 const VALID_KEY = "Thiên456";
 const ADMIN     = "@ADMNLc79";
-const BASE_RATE = 0.4861;
 
 const API_URL_HU  = "https://wtx.tele68.com/v1/tx/lite-sessions?cp=R&cl=R&pf=web&at=83991213bfd4c554dc94bcd98979bdc5";
 const API_URL_MD5 = "https://wtxmd52.tele68.com/v1/txmd5/sessions";
@@ -13,93 +12,94 @@ const API_URL_MD5 = "https://wtxmd52.tele68.com/v1/txmd5/sessions";
 //  HELPERS
 // ═══════════════════════════════════════════════════════════════════
 const clamp = (v, lo = 0.05, hi = 0.95) => Math.max(lo, Math.min(hi, v));
-const T2N   = s => (s === "T" ? 1 : 0);
-const freq  = (a, v = "T") => a.length ? a.filter(x => x === v).length / a.length : 0.5;
-const cnt   = (a, v) => a.filter(x => x === v).length;
 const tail  = (a, n) => a.slice(-n);
 
-function streakLen(seq) {
-    if (!seq.length) return [0, ""];
-    const L = seq[seq.length - 1];
-    let s = 1;
-    for (let i = seq.length - 2; i >= 0; i--) { if (seq[i] === L) s++; else break; }
-    return [s, L];
-}
-
-function mkv(seq, o) {
-    if (seq.length < o + 5) return [0.5, 0, "n/a"];
-    const ctx = seq.slice(-o).join("");
-    let t = 0, x = 0;
-    for (let i = 0; i < seq.length - o; i++) {
-        if (seq.slice(i, i + o).join("") === ctx) {
-            if (seq[i + o] === "T") t++; else x++;
-        }
-    }
-    if (t + x < 3) return [0.5, 0, `o${o} n/a`];
-    return [(t + 0.5) / (t + x + 1), Math.min(2, (t + x) / 5), `o${o} n${t + x}`];
-}
-
 // ═══════════════════════════════════════════════════════════════════
-//  NHÓM 1 — CẦU  (6 thuật toán, đã cân bằng chống bias)
+//  6 THUẬT TOÁN CẦU — PHÂN TÍCH 15 PHIÊN GẦN NHẤT
 // ═══════════════════════════════════════════════════════════════════
 
-// N1 — Cầu bệt: theo trend khi streak ngắn, CHÙNG khi vừa, ĐẢO khi dài
-const N1 = c => {
-    const [s, last] = streakLen(c.seq);
-    if (s === 0) return [0.5, 0, "n/a"];
-    if (s <= 2) return [last === "T" ? 0.56 : 0.44, 0.9, `bệt ${last}×${s}`];
-    if (s === 3) return [last === "T" ? 0.47 : 0.53, 1.0, `chùng ${last}×${s}`];
-    if (s === 4) return [last === "T" ? 0.42 : 0.58, 1.3, `đảo ${last}×${s}`];
-    return [last === "T" ? 0.38 : 0.62, 1.6, `đảo mạnh ${last}×${s}`];
+// P1 — ĐẢO THUẬN: chuỗi T-X-T-X-... dài ≥5 → tiếp tục đảo (ngược last)
+const P1 = c => {
+    const w = tail(c.seq, 15);
+    if (w.length < 6) return [0.5, 0, "n/a"];
+    let alt = 1;
+    for (let i = w.length - 1; i >= 1; i--) {
+        if (w[i] !== w[i - 1]) alt++; else break;
+    }
+    if (alt < 5) return [0.5, 0, `alt=${alt}`];
+    const last = w[w.length - 1];
+    return [last === "T" ? 0.42 : 0.58, Math.min(2, (alt - 3) * 0.55), `đảo×${alt}`];
 };
 
-// N2 — Cầu đảo: LUÔN ngược lại kết quả cuối (counter-balance N1)
-const N2 = c => {
-    const [s, last] = streakLen(c.seq);
-    if (s === 0) return [0.5, 0, "n/a"];
-    const w = 0.7 + Math.min(1.3, (s - 1) * 0.35);
-    return [last === "T" ? 0.44 : 0.56, w, `đảo ${last}×${s}`];
+// P2 — CẦU 1-1: 8 phiên cuối là TXTXTXTX (đảo đều hoàn hảo)
+const P2 = c => {
+    const w = tail(c.seq, 15);
+    if (w.length < 8) return [0.5, 0, "n/a"];
+    const last8 = w.slice(-8);
+    for (let i = 1; i < 8; i++) if (last8[i] === last8[i - 1]) return [0.5, 0, "n/a"];
+    const last = last8[7];
+    return [last === "T" ? 0.42 : 0.58, 1.6, "1-1×8"];
 };
 
-// N3 — Cầu 2-2 / 3-3 / 1-1 xen kẽ
-const N3 = c => {
-    const w8 = tail(c.seq, 8).join("");
-    const pats = [
-        { p: "TTXX",   n: "T", b: 1.3, txt: "2-2→T" },
-        { p: "XXTT",   n: "X", b: 1.3, txt: "2-2→X" },
-        { p: "TTTXXX", n: "T", b: 1.5, txt: "3-3→T" },
-        { p: "XXXTTT", n: "X", b: 1.5, txt: "3-3→X" },
-    ];
-    for (const { p, n, b, txt } of pats) {
-        if (w8.endsWith(p)) return [n === "T" ? 0.58 : 0.42, b, txt];
-    }
-    const w6 = tail(c.seq, 6);
-    if (w6.length === 6) {
-        let alt = true;
-        for (let i = 1; i < 6; i++) if (w6[i] === w6[i - 1]) { alt = false; break; }
-        if (alt) {
-            const last = w6[5];
-            return [last === "T" ? 0.44 : 0.56, 0.9, "1-1 xen kẽ"];
-        }
-    }
+// P3 — CẦU 2-2: TTXXTTXX (→T) hoặc XXTTXXTT (→X)
+const P3 = c => {
+    const w = tail(c.seq, 15);
+    if (w.length < 8) return [0.5, 0, "n/a"];
+    const p8 = w.slice(-8).join("");
+    if (p8 === "TTXXTTXX") return [0.58, 1.6, "2-2×4→T"];
+    if (p8 === "XXTTXXTT") return [0.42, 1.6, "2-2×4→X"];
+    const p4 = w.slice(-4).join("");
+    if (p4 === "TTXX") return [0.58, 1.0, "2-2×2→T"];
+    if (p4 === "XXTT") return [0.42, 1.0, "2-2×2→X"];
     return [0.5, 0, "n/a"];
 };
 
-// N4 — Markov bậc 1
-const N4 = c => { const r = mkv(c.seq, 1); return [r[0], r[1] * 1.2, r[2]]; };
+// P4 — CẦU 3-1: TTTXTTTX (→T) hoặc XXXTXXXT (→X)
+const P4 = c => {
+    const w = tail(c.seq, 15);
+    if (w.length < 8) return [0.5, 0, "n/a"];
+    const p8 = w.slice(-8).join("");
+    if (p8 === "TTTXTTTX") return [0.58, 1.5, "3-1×2→T"];
+    if (p8 === "XXXTXXXT") return [0.42, 1.5, "3-1×2→X"];
+    const p4 = w.slice(-4).join("");
+    if (p4 === "TTTX") return [0.42, 1.0, "3-1 bẻ→X"];
+    if (p4 === "XXXT") return [0.58, 1.0, "3-1 bẻ→T"];
+    return [0.5, 0, "n/a"];
+};
 
-// N5 — Markov bậc 2
-const N5 = c => { const r = mkv(c.seq, 2); return [r[0], r[1] * 1.5, r[2]]; };
+// P5 — CẦU 2-1: TTXTTX (→T) hoặc XXTXXT (→X)
+const P5 = c => {
+    const w = tail(c.seq, 15);
+    if (w.length < 6) return [0.5, 0, "n/a"];
+    const p6 = w.slice(-6).join("");
+    if (p6 === "TTXTTX") return [0.58, 1.3, "2-1×2→T"];
+    if (p6 === "XXTXXT") return [0.42, 1.3, "2-1×2→X"];
+    const p3 = w.slice(-3).join("");
+    if (p3 === "TTX") return [0.58, 0.9, "2-1×1→T"];
+    if (p3 === "XXT") return [0.42, 0.9, "2-1×1→X"];
+    return [0.5, 0, "n/a"];
+};
 
-// N6 — Markov bậc 3 (mạnh nhất)
-const N6 = c => { const r = mkv(c.seq, 3); return [r[0], r[1] * 1.8, r[2]]; };
+// P6 — CẦU 3-3: TTTXXX (→T) hoặc XXXTTT (→X)
+const P6 = c => {
+    const w = tail(c.seq, 15);
+    if (w.length < 6) return [0.5, 0, "n/a"];
+    const p12 = w.slice(-12).join("");
+    if (p12 === "TTTXXXTTTXXX") return [0.58, 1.8, "3-3×2→T"];
+    if (p12 === "XXXTTTXXXTTT") return [0.42, 1.8, "3-3×2→X"];
+    const p6 = w.slice(-6).join("");
+    if (p6 === "TTTXXX") return [0.58, 1.4, "3-3×1→T"];
+    if (p6 === "XXXTTT") return [0.42, 1.4, "3-3×1→X"];
+    return [0.5, 0, "n/a"];
+};
 
-// ═══════════════════════════════════════════════════════════════════
-//  6 MODULE REGISTRY
-// ═══════════════════════════════════════════════════════════════════
 const MODULES = [
-    ["N1", N1], ["N2", N2], ["N3", N3],
-    ["N4", N4], ["N5", N5], ["N6", N6],
+    ["P1_ĐảoThuận", P1],
+    ["P2_Cầu1-1",   P2],
+    ["P3_Cầu2-2",   P3],
+    ["P4_Cầu3-1",   P4],
+    ["P5_Cầu2-1",   P5],
+    ["P6_Cầu3-3",   P6],
 ];
 
 // ═══════════════════════════════════════════════════════════════════
@@ -123,11 +123,11 @@ async function fetchJSON(url, timeoutMs = 8000, retries = 2) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  ANALYZE — 6 module + Anti-Drift
+//  ANALYZE — chạy 6 module cầu
 // ═══════════════════════════════════════════════════════════════════
 function analyze(state) {
     const sessions = state.sessions;
-    if (sessions.length < 30) return null;
+    if (sessions.length < 15) return null;
     const seq = sessions.map(s => s.result === "TAI" ? "T" : "X");
     const ctx = { seq, sessions, state };
 
@@ -141,39 +141,38 @@ function analyze(state) {
         }
     }
 
-    // Ensemble có trọng số
-    let num = 0, den = 0;
-    for (const s of signals) { num += s.p_tai * s.w; den += s.w; }
-    let pTai = den ? num / den / 100 : 0.5;
+    // Ensemble có trọng số — CHỈ tính các pattern có match (w > 0)
+    const matched = signals.filter(s => s.w > 0);
 
-    // ═══════════════════════════════════════════════════════════
-    //  ANTI-DRIFT: kéo về trung tính nếu 20 phiên lệch > 65%
-    // ═══════════════════════════════════════════════════════════
-    const w20 = seq.slice(-20);
-    let driftNote = "";
-    if (w20.length >= 20) {
-        const fT = cnt(w20, "T") / w20.length;
-        if (fT >= 0.65 || fT <= 0.35) {
-            const before = pTai;
-            pTai = pTai * 0.82 + 0.5 * 0.18; // soft mean-reversion
-            driftNote = ` · drift ${(fT*100).toFixed(0)}%T→${(pTai*100).toFixed(0)}%`;
-        }
+    let pTai = 0.5, verdict = "NEUTRAL", matchedNames = [];
+    if (matched.length === 0) {
+        // Không pattern nào match → dựa vào phiên cuối đảo nhẹ (fallback 50/50)
+        verdict = "NO_PATTERN";
+    } else {
+        let num = 0, den = 0;
+        for (const s of matched) { num += s.p_tai * s.w; den += s.w; }
+        pTai = den ? num / den / 100 : 0.5;
+        verdict = "MATCHED";
+        matchedNames = matched.map(s => s.id);
     }
 
-    // Agreement + Tier
-    const active = signals.filter(s => s.w > 0);
     const predict = pTai >= 0.5 ? "TAI" : "XIU";
-    const agree = active.length
-        ? active.filter(s => (s.p_tai >= 50) === (predict === "TAI")).length / active.length * 100
-        : 50;
     const conf = Math.max(pTai, 1 - pTai) * 100;
 
+    // Agreement trên các pattern match
+    const agree = matched.length
+        ? matched.filter(s => (s.p_tai >= 50) === (predict === "TAI")).length / matched.length * 100
+        : 0;
+
+    // Tier
     let tier = "WEAK";
-    if (conf >= 57 && agree >= 65) tier = "STRONG";
+    if (matched.length === 0) tier = "NO_PATTERN";
+    else if (matched.length === 1) tier = "SINGLE";
+    else if (conf >= 57 && agree >= 65) tier = "STRONG";
     else if (conf >= 53 && agree >= 55) tier = "OK";
     else if (agree < 40) tier = "SPLIT";
 
-    // Wilson
+    // Wilson từ lịch sử thắng
     const h = state.history.slice(-100);
     let wilson = 0;
     if (h.length >= 20) {
@@ -185,12 +184,24 @@ function analyze(state) {
     }
 
     const [streak, last] = streakLen(seq);
+    const last15 = seq.slice(-15);
 
     return {
         predict, confidence: conf, tier, agreement: agree, wilson,
         p_tai: pTai * 100, p_xiu: (1 - pTai) * 100,
-        streak, last, driftNote, signals,
+        streak, last, last15: last15.join(""),
+        matchedCount: matched.length,
+        matchedNames: matchedNames.join(","),
+        signals,
     };
+}
+
+function streakLen(seq) {
+    if (!seq.length) return [0, ""];
+    const L = seq[seq.length - 1];
+    let s = 1;
+    for (let i = seq.length - 2; i >= 0; i--) { if (seq[i] === L) s++; else break; }
+    return [s, L];
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -246,7 +257,7 @@ async function fetchHu()  { try { updateState(stateHu,  parseHu(await fetchJSON(
 async function fetchMd5() { try { updateState(stateMd5, parseMd5(await fetchJSON(API_URL_MD5))); stateMd5.lastFetchAt = Date.now(); } catch (e) { console.error("MD5:", e.message); } }
 
 function getPrediction(state) {
-    if (state.sessions.length < 30) return null;
+    if (state.sessions.length < 15) return null;
     if (state.lastPred && state.lastPred.session === state.lastId + 1) return state.lastPred.ai_result;
     const ai = analyze(state);
     if (!ai) return null;
@@ -258,7 +269,7 @@ function getPrediction(state) {
 //  BUILD RESPONSE
 // ═══════════════════════════════════════════════════════════════════
 function buildResp(state, game) {
-    if (state.sessions.length < 30) return null;
+    if (state.sessions.length < 15) return null;
     const ai = getPrediction(state);
     if (!ai) return null;
     const last = state.sessions[state.sessions.length - 1];
@@ -274,14 +285,17 @@ function buildResp(state, game) {
         Phien_nay: last.id + 1,
         Du_doan: ai.predict === "TAI" ? "tài" : "xỉu",
         Do_tin_cay: `${ai.confidence.toFixed(1)}%`,
-        Ly_do: `Tier ${ai.tier} · Agree ${ai.agreement.toFixed(0)}% · Wilson ${ai.wilson.toFixed(1)}%${ai.driftNote}`,
+        Ly_do: `Tier ${ai.tier} · Match ${ai.matchedCount}/6 (${ai.matchedNames || "none"}) · Agree ${ai.agreement.toFixed(0)}% · Wilson ${ai.wilson.toFixed(1)}%`,
         Biet_hien_tai: `${ai.streak} ${ai.last}`,
-        Nguon_cau: `6 modules CẦU · ${topSig}`,
+        Last15: ai.last15,
+        Nguon_cau: `6 patterns × 15 phiên · ${topSig}`,
         AI: {
             tier: ai.tier,
             p_tai: +ai.p_tai.toFixed(2), p_xiu: +ai.p_xiu.toFixed(2),
             wilson: +ai.wilson.toFixed(2), agreement: +ai.agreement.toFixed(1),
-            drift: ai.driftNote || "none",
+            matched_count: ai.matchedCount,
+            matched: ai.matchedNames || "none",
+            last15: ai.last15,
             signals: ai.signals.map(s => ({ id: s.id, p_tai: +s.p_tai.toFixed(1), w: +s.w.toFixed(2), note: s.note })),
         },
         "5_van_gan_nhat": state.sessions.slice(-5).reverse().map((v, i) => ({
@@ -300,15 +314,14 @@ app.register(cors, { origin: "*" });
 
 app.get("/", async () => ({
     status: "ok", admin: ADMIN,
-    engine: "LC79 v10 — 6 THUẬT TOÁN CẦU + ANTI-DRIFT",
-    modules: {
-        N1: "Cầu bệt (streak follow/chùng/đảo)",
-        N2: "Cầu đảo (counter-balance)",
-        N3: "Cầu 2-2 / 3-3 / 1-1",
-        N4: "Markov bậc 1",
-        N5: "Markov bậc 2",
-        N6: "Markov bậc 3",
-        AntiDrift: "Kéo về 0.5 nếu 20 phiên lệch >65%",
+    engine: "LC79 v11 — 6 PATTERNS × 15 PHIÊN",
+    patterns: {
+        P1: "Đảo thuận (T-X-T-X ≥5 nhịp)",
+        P2: "Cầu 1-1 (TXTXTXTX)",
+        P3: "Cầu 2-2 (TTXXTTXX / XXTTXXTT)",
+        P4: "Cầu 3-1 (TTTXTTTX / XXXTXXXT)",
+        P5: "Cầu 2-1 (TTXTTX / XXTXXT)",
+        P6: "Cầu 3-3 (TTTXXX / XXXTTT)",
     },
     hu:  { loaded: stateHu.sessions.length,  last_id: stateHu.lastId },
     md5: { loaded: stateMd5.sessions.length, last_id: stateMd5.lastId },
@@ -343,7 +356,7 @@ app.get("/check-key", async req => req.query.key === VALID_KEY
     : { status: "error", message: `Sai key! Ib ${ADMIN}` });
 
 app.listen({ port: PORT, host: "0.0.0.0" }).then(() => {
-    console.log(`🚀 [${PORT}] LC79 v10 · 6 modules CẦU + Anti-Drift online`);
+    console.log(`🚀 [${PORT}] LC79 v11 · 6 patterns × 15 phiên online`);
     setTimeout(() => { fetchHu().catch(() => {}); fetchMd5().catch(() => {}); }, 100);
     setInterval(() => fetchHu().catch(() => {}),  6000);
     setInterval(() => fetchMd5().catch(() => {}), 6000);
