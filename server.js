@@ -20,13 +20,26 @@ const cnt   = (a, v) => a.filter(x => x === v).length;
 const tail  = (a, n) => a.slice(-n);
 const ent   = p => (p <= 0 || p >= 1) ? 0 : -(p * Math.log2(p) + (1 - p) * Math.log2(1 - p));
 const runs  = seq => { if (!seq.length) return 0; let r = 1; for (let i = 1; i < seq.length; i++) if (seq[i] !== seq[i - 1]) r++; return r; };
+function streak(seq) {
+    if (!seq.length) return [0, ""];
+    const L = seq[seq.length - 1];
+    let s = 1;
+    for (let i = seq.length - 2; i >= 0; i--) { if (seq[i] === L) s++; else break; }
+    return [s, L];
+}
+function fetchImpl() {
+    if (typeof fetch === "function") return fetch;
+    if (typeof globalThis.fetch === "function") return globalThis.fetch;
+    throw new Error("fetch not available (Node <18) — upgrade Node hoặc cài node-fetch");
+}
 
 async function fetchJSON(url, timeoutMs = 8000, retries = 2) {
+    const f = fetchImpl();
     for (let a = 0; a <= retries; a++) {
         const ctrl = new AbortController();
         const t = setTimeout(() => ctrl.abort(), timeoutMs);
         try {
-            const r = await fetch(url, { signal: ctrl.signal, headers: { "User-Agent": "Mozilla/5.0 LC79" } });
+            const r = await f(url, { signal: ctrl.signal, headers: { "User-Agent": "Mozilla/5.0 LC79" } });
             clearTimeout(t);
             if (!r.ok) throw new Error("HTTP " + r.status);
             return await r.json();
@@ -39,26 +52,46 @@ async function fetchJSON(url, timeoutMs = 8000, retries = 2) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  NHÓM A — THỐNG KÊ & XÁC SUẤT (8)
+//  NHÓM A — THỐNG KÊ & XÁC SUẤT CƠ BẢN (8)
 // ═══════════════════════════════════════════════════════════════════
-const A1 = c => { const w = tail(c.seq, 10); return [freq(w), w.length >= 6 ? 0.8 : 0, "freq10"]; };
-const A2 = c => { const w = tail(c.seq, 40); let a = 6, b = 6; for (const x of w) x === "T" ? a++ : b++; return [a / (a + b), 1.5, "beta"]; };
-const A3 = c => { const w = tail(c.seq, 30); return [(cnt(w, "T") + 1) / (w.length + 2), 0.8, "laplace"]; };
-const A4 = c => { let p = 0.5; for (const x of tail(c.seq, 50)) p = 0.15 * T2N(x) + 0.85 * p; return [p, 1.2, "ewma"]; };
+const A1 = c => { const w = tail(c.seq, 10); return [freq(w), 0.9, `f10=${freq(w).toFixed(2)}`]; };
+
+const A2 = c => {
+    const w = tail(c.seq, 40);
+    let a = 3, b = 3;
+    for (const x of w) x === "T" ? a++ : b++;
+    return [a / (a + b), 1.6, `β(${a},${b})`];
+};
+
+const A3 = c => { const w = tail(c.seq, 30); return [(cnt(w, "T") + 1) / (w.length + 2), 0.9, "laplace"]; };
+
+const A4 = c => {
+    let p = 0.5;
+    for (const x of tail(c.seq, 50)) p = 0.18 * T2N(x) + 0.82 * p;
+    return [p, 1.3, `ewma=${p.toFixed(2)}`];
+};
+
 const A5 = c => {
     const w = tail(c.seq, 40), n = w.length;
     if (n < 10) return [0.5, 0, "n/a"];
     const z = (cnt(w, "T") - n * 0.5) / Math.sqrt(n * 0.25);
-    return [clamp(0.5 - Math.tanh(z * 0.4) * 0.4), Math.min(2, Math.abs(z)), `z${z.toFixed(1)}`];
+    return [clamp(0.5 - Math.tanh(z * 0.5) * 0.45), Math.min(2, Math.abs(z) + 0.3), `z=${z.toFixed(2)}`];
 };
+
 const A6 = c => {
     const w = tail(c.seq, 50), n1 = cnt(w, "T"), n2 = cnt(w, "X");
     if (n1 + n2 < 10) return [0.5, 0, "n/a"];
     const r = runs(w), exp = 2 * n1 * n2 / (n1 + n2) + 1;
     const vr = 2 * n1 * n2 * (2 * n1 * n2 - n1 - n2) / ((n1 + n2) ** 2 * (n1 + n2 - 1));
     const z = (r - exp) / Math.sqrt(Math.max(0.001, vr));
-    return [clamp(0.5 - Math.tanh(z * 0.3) * 0.35), 1.0, `runs${r}`];
+    // runs ít → xu hướng (streak) → predict tiếp tục; runs nhiều → đảo chiều
+    const last = w[w.length - 1];
+    let p = 0.5;
+    if (z < -0.5) p = last === "T" ? 0.56 : 0.44;
+    else if (z > 0.5) p = last === "T" ? 0.44 : 0.56;
+    return [clamp(p), 1.2, `runs=${r},z=${z.toFixed(2)}`];
 };
+
 const A7 = c => {
     const w = tail(c.seq, 60).map(T2N);
     if (w.length < 20) return [0.5, 0, "n/a"];
@@ -66,17 +99,24 @@ const A7 = c => {
     let num = 0, den = 0;
     for (let i = 1; i < w.length; i++) { num += (w[i] - m) * (w[i - 1] - m); den += (w[i - 1] - m) ** 2; }
     const phi = den ? num / den : 0, last = w[w.length - 1];
-    return [clamp(m + phi * (last - m)), Math.min(2, Math.abs(phi) * 4), `phi${phi.toFixed(2)}`];
+    // autocorr dương → trend → đi tiếp; âm → đảo chiều
+    const p = last === 1 ? 0.5 + phi * 0.5 : 0.5 - phi * 0.5;
+    return [clamp(p), Math.min(2.2, Math.abs(phi) * 5 + 0.4), `φ=${phi.toFixed(2)}`];
 };
+
 const A8 = c => {
     const w = tail(c.seq, 60);
     let num = 0, den = 0;
-    for (let i = 0; i < w.length; i++) { const wt = Math.pow(0.94, w.length - 1 - i); if (w[i] === "T") num += wt; den += wt; }
-    return [den ? num / den : 0.5, 1.0, "recency"];
+    for (let i = 0; i < w.length; i++) {
+        const wt = Math.pow(0.93, w.length - 1 - i);
+        if (w[i] === "T") num += wt;
+        den += wt;
+    }
+    return [den ? num / den : 0.5, 1.1, `recency=${(num / den).toFixed(2)}`];
 };
 
 // ═══════════════════════════════════════════════════════════════════
-//  NHÓM B — MARKOV & CHUỖI MẪU (8)
+//  NHÓM B — MARKOV & PATTERN (8)
 // ═══════════════════════════════════════════════════════════════════
 function mkv(seq, o) {
     if (seq.length < o + 5) return [0.5, 0, "n/a"];
@@ -86,37 +126,53 @@ function mkv(seq, o) {
         if (seq.slice(i, i + o).join("") === ctx) { if (seq[i + o] === "T") t++; else x++; }
     }
     if (t + x < 3) return [0.5, 0, `o${o}n/a`];
-    return [(t + 0.5) / (t + x + 1), Math.min(2, (t + x) / 5), `mk${o}n${t + x}`];
+    return [(t + 0.5) / (t + x + 1), Math.min(2.2, (t + x) / 4 + 0.4), `mk${o}:${t + x}`];
 }
 const B1 = c => mkv(c.seq, 1);
 const B2 = c => mkv(c.seq, 2);
 const B3 = c => mkv(c.seq, 3);
 const B4 = c => {
-    let b = [0.5, 0, ""], bn = 0;
+    let best = [0.5, 0, "n/a"], bn = 0;
     for (let o = 1; o <= 4; o++) {
         const r = mkv(c.seq, o);
-        const m = r[2].match(/n(\d+)/), n = m ? +m[1] : 0;
-        if (n > bn) { bn = n; b = r; }
+        const m = r[2].match(/:(\d+)/), n = m ? +m[1] : 0;
+        if (n > bn) { bn = n; best = r; }
     }
-    return b;
+    return best;
 };
+
 const B5 = c => {
-    const w = tail(c.seq, 6).join("");
-    const pats = ["TXXT", "XTTX", "TTXX", "XXTT", "TXTX", "XTXT"];
-    for (const p of pats) if (w.endsWith(p)) return [p[0] === "T" ? 0.58 : 0.42, 1.0, p];
+    const w = tail(c.seq, 12).join("");
+    const pats = ["TXXT", "XTTX", "TTXX", "XXTT", "TXTX", "XTXT", "TTT", "XXX"];
+    for (const p of pats) {
+        if (w.endsWith(p)) {
+            // tìm tiền lệ trong history
+            const full = c.seq.join("");
+            let t = 0, x = 0;
+            for (let i = 0; i < full.length - p.length; i++) {
+                if (full.slice(i, i + p.length) === p && i + p.length < full.length) {
+                    if (full[i + p.length] === "T") t++; else x++;
+                }
+            }
+            if (t + x >= 2) return [(t + 0.5) / (t + x + 1), Math.min(1.8, 0.6 + (t + x) / 6), `pat ${p} n=${t + x}`];
+            return [p[0] === "T" ? 0.56 : 0.44, 0.9, `pat ${p} prior`];
+        }
+    }
     return [0.5, 0, "n/a"];
 };
+
 const B6 = c => {
     const w = tail(c.seq, 8);
     if (w.length < 6) return [0.5, 0, "n/a"];
     let alt = true;
     for (let i = 1; i < w.length; i++) if (w[i] === w[i - 1]) { alt = false; break; }
-    if (!alt) return [0.5, 0, "no"];
+    if (!alt) return [0.5, 0, "no-alt"];
     const last = w[w.length - 1];
-    return [last === "T" ? 0.4 : 0.6, 1.5, "alt"];
+    return [last === "T" ? 0.42 : 0.58, 1.4, "alt-break"];
 };
+
 const B7 = c => {
-    const w = tail(c.seq, 80).map(T2N);
+    const w = tail(c.seq, 100).map(T2N);
     if (w.length < 20) return [0.5, 0, "n/a"];
     let tt = 0, tx = 0, ct = 0, cx = 0;
     for (let i = 1; i < w.length; i++) {
@@ -125,23 +181,18 @@ const B7 = c => {
     }
     const pT = ct ? tt / ct : 0.5, pX = cx ? tx / cx : 0.5;
     const last = w[w.length - 1];
-    return [last === 1 ? pT : pX, 1.3, "trans"];
+    const p = last === 1 ? pT : pX;
+    return [clamp(p), 1.4, `trans=${(p * 100).toFixed(0)}%`];
 };
+
 const B8 = c => {
-    if (c.seq.length < 20) return [0.5, 0, "n/a"];
-    let best = [0.5, 0, "n/a"];
-    for (let L = 2; L <= 6; L++) {
-        const ctx = c.seq.slice(-L).join("");
-        let t = 0, x = 0;
-        for (let i = 0; i < c.seq.length - L; i++) {
-            if (c.seq.slice(i, i + L).join("") === ctx) { if (c.seq[i + L] === "T") t++; else x++; }
-        }
-        if (t + x >= 3) {
-            const p = (t + 0.5) / (t + x + 1);
-            if (L === 6 || best[2] === "n/a" || t + x >= 5) best = [p, Math.min(1.5, (t + x) / 6), `L${L}n${t + x}`];
-        }
-    }
-    return best;
+    // streak-based (rất quan trọng - giữ lại)
+    const [s, L] = streak(c.seq);
+    if (s < 3) return [0.5, 0, `s=${s}`];
+    // streak dài → dự đoán đảo chiều
+    const reverse = s >= 5 ? 0.6 : s >= 4 ? 0.55 : 0.52;
+    const p = L === "T" ? 0.5 - (reverse - 0.5) : 0.5 + (reverse - 0.5);
+    return [clamp(p), Math.min(2.5, (s - 2) * 0.7), `break s=${s}${L}`];
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -153,105 +204,128 @@ const C1 = c => {
         const xp = x, Pp = P + Q, K = Pp / (Pp + R);
         x = xp + K * (z - xp); P = (1 - K) * Pp;
     }
-    return [x, 1.2, "kalman"];
+    return [x, 1.3, `kal=${x.toFixed(2)}`];
 };
+
 const C2 = c => {
     const w = tail(c.seq, 40).map(T2N);
     if (w.length < 10) return [0.5, 0, "n/a"];
-    let l = w[0], b = 0; const a = 0.3, be = 0.1;
+    let l = w[0], b = 0; const a = 0.35, be = 0.12;
     for (let i = 1; i < w.length; i++) { const lp = l; l = a * w[i] + (1 - a) * (l + b); b = be * (l - lp) + (1 - be) * b; }
-    return [clamp(l + b), 1.0, "holt"];
+    return [clamp(l + b), 1.2, `holt=${(l + b).toFixed(2)}`];
 };
+
 const C3 = c => {
     const w = tail(c.seq, 30).map(T2N), n = w.length;
     if (n < 10) return [0.5, 0, "n/a"];
     let sx = 0, sy = 0, sxy = 0, sxx = 0;
     for (let i = 0; i < n; i++) { sx += i; sy += w[i]; sxy += i * w[i]; sxx += i * i; }
-    const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx), inter = (sy - slope * sx) / n, nxt = inter + slope * n;
-    return [clamp(0.5 + (nxt - 0.5) * 0.7), Math.min(1.5, Math.abs(slope) * 8), "lin"];
+    const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    const inter = (sy - slope * sx) / n, nxt = inter + slope * n;
+    return [clamp(0.5 + (nxt - 0.5) * 0.9), Math.min(1.6, Math.abs(slope) * 12 + 0.3), `lin=${nxt.toFixed(2)}`];
 };
+
 const C4 = c => {
     const w = tail(c.seq, 30).map(T2N);
     if (w.length < 20) return [0.5, 0, "n/a"];
     const ma5 = w.slice(-5).reduce((a, b) => a + b, 0) / 5;
     const ma20 = w.reduce((a, b) => a + b, 0) / w.length;
-    return [clamp(0.5 + (ma5 - ma20)), 1.0, "ma"];
+    return [clamp(0.5 + (ma5 - ma20) * 1.5), Math.min(1.5, Math.abs(ma5 - ma20) * 6 + 0.3), `ma=${(ma5 - ma20).toFixed(2)}`];
 };
+
 const C5 = c => {
     const w = tail(c.seq, 60).map(T2N);
     if (w.length < 20) return [0.5, 0, "n/a"];
     const P = 4, r = w.slice(-P * 2);
     const s1 = r.slice(0, P).reduce((a, b) => a + b, 0) / P;
     const s2 = r.slice(P).reduce((a, b) => a + b, 0) / P;
-    return [clamp(0.5 + (s2 - s1) * 0.5), 0.8, "hw"];
+    return [clamp(0.5 + (s2 - s1) * 0.7), 0.9, `hw=${(s2 - s1).toFixed(2)}`];
 };
+
 const C6 = c => {
     const w = tail(c.seq, 40).map(T2N);
     if (w.length < 15) return [0.5, 0, "n/a"];
     const m = w.reduce((a, b) => a + b, 0) / w.length;
     const v = w.reduce((a, b) => a + (b - m) ** 2, 0) / w.length;
     const vol = Math.sqrt(v), last = w[w.length - 1];
-    return [clamp(0.5 + (0.5 - last) * (0.5 - vol) * 0.6), Math.min(1.5, vol * 3), "vol"];
+    // vol thấp → mean reversion; vol cao → follow
+    const p = 0.5 + (0.5 - last) * (0.5 - vol) * 0.8;
+    return [clamp(p), Math.min(1.5, vol * 4 + 0.3), `vol=${vol.toFixed(2)}`];
 };
+
 const C7 = c => {
     const w = tail(c.seq, 32).map(T2N);
     if (w.length < 16) return [0.5, 0, "n/a"];
     const ap = [];
     for (let i = 0; i < w.length - 1; i += 2) ap.push((w[i] + w[i + 1]) / 2);
     const recent = ap.slice(-4).reduce((a, b) => a + b, 0) / 4;
-    return [clamp(recent), 0.9, "haar"];
+    return [clamp(0.5 + (recent - 0.5) * 1.4), 0.9, `haar=${recent.toFixed(2)}`];
 };
+
 const C8 = c => {
     const ema = (arr, a) => { let e = arr[0]; for (const x of arr) e = a * x + (1 - a) * e; return e; };
     const w = tail(c.seq, 50).map(T2N);
     if (w.length < 15) return [0.5, 0, "n/a"];
-    const e1 = ema(w, 0.3), e2 = ema(w, 0.1);
-    return [clamp(0.5 + (e1 - e2) * 1.5 + (e1 - 0.5) * 0.3), 1.1, "ema-multi"];
+    const e1 = ema(w, 0.35), e2 = ema(w, 0.1);
+    return [clamp(0.5 + (e1 - e2) * 2 + (e1 - 0.5) * 0.4), 1.2, `ema=${(e1 - e2).toFixed(2)}`];
 };
 
 // ═══════════════════════════════════════════════════════════════════
-//  NHÓM D — THÔNG TIN & META-ENSEMBLE (8)
+//  NHÓM D — THÔNG TIN & META (8)
 // ═══════════════════════════════════════════════════════════════════
 const D1 = c => {
-    const w = tail(c.seq, 50), H = ent(freq(w));
-    return [clamp(0.5 + (freq(w) - 0.5) * (1 - H)), Math.max(0.1, (1 - H) * 2), `H${H.toFixed(2)}`];
+    const w = tail(c.seq, 50), H = ent(freq(w)), p = freq(w);
+    // H thấp → cầu có pattern rõ → amplify xu hướng
+    return [clamp(0.5 + (p - 0.5) * (1.2 - H) * 1.5), Math.max(0.4, (1 - H) * 2.2), `H=${H.toFixed(2)}`];
 };
+
 const D2 = c => {
     const ps = freq(tail(c.seq, 15)), pl = freq(tail(c.seq, 60));
     const kl = ps * Math.log(ps / pl + 1e-9) + (1 - ps) * Math.log((1 - ps) / (1 - pl) + 1e-9);
-    return [clamp(0.5 + (ps - 0.5) * Math.min(1, 1 / (1 + Math.abs(kl)))), Math.min(1.5, Math.abs(kl)), `KL${kl.toFixed(2)}`];
+    return [clamp(0.5 + (ps - pl) * 1.2), Math.min(1.5, Math.abs(kl) * 2 + 0.3), `KL=${kl.toFixed(2)}`];
 };
+
 const D3 = c => {
     const p = freq(tail(c.seq, 15)), q = freq(tail(c.seq, 60)), m = (p + q) / 2;
     const js = 0.5 * p * Math.log(p / m + 1e-9) + 0.5 * q * Math.log(q / m + 1e-9)
              + 0.5 * (1 - p) * Math.log((1 - p) / (1 - m) + 1e-9) + 0.5 * (1 - q) * Math.log((1 - q) / (1 - m) + 1e-9);
-    return [0.5 + (p - 0.5) * 0.7, Math.max(0.1, 1 - js * 2), `JS${js.toFixed(2)}`];
+    return [0.5 + (p - 0.5) * 1.1, Math.max(0.3, 1.4 - js * 2), `JS=${js.toFixed(2)}`];
 };
+
 const D4 = c => {
     const p = freq(tail(c.seq, 40)), b = BASE_RATE;
     const ce = -(p * Math.log(b) + (1 - p) * Math.log(1 - b));
-    return [0.5 + (p - b) * 0.8, 0.7, `CE${ce.toFixed(2)}`];
+    return [0.5 + (p - b) * 1.1, 0.9, `CE=${ce.toFixed(2)}`];
 };
+
 const D5 = c => {
     const p = freq(tail(c.seq, 30));
     const pp = Math.exp(-(p * Math.log(p + 1e-9) + (1 - p) * Math.log(1 - p + 1e-9)));
-    return [0.5 + (p - 0.5) * 0.7, Math.max(0.1, 1 - pp / 2), `PPL${pp.toFixed(1)}`];
+    return [0.5 + (p - 0.5) * 1.1, Math.max(0.3, 1.2 - pp / 2.2), `PPL=${pp.toFixed(1)}`];
 };
+
 const D6 = c => {
     const s = tail(c.seq, 40).join("");
     let cx = 1, cur = ""; const dict = new Set();
     for (const ch of s) { if (dict.has(cur + ch)) cur += ch; else { dict.add(cur + ch); cx++; cur = ch; } }
-    return [0.5 + (freq(tail(c.seq, 20)) - 0.5) * 0.6, Math.min(1.3, cx / 20), `LZ${cx}`];
+    const p = freq(tail(c.seq, 20));
+    // complexity thấp → pattern rõ → follow freq
+    return [0.5 + (p - 0.5) * 1.1, Math.min(1.4, 20 / Math.max(1, cx) + 0.3), `LZ=${cx}`];
 };
+
 const D7 = c => {
     const p10 = freq(tail(c.seq, 10)), p30 = freq(tail(c.seq, 30)), p100 = freq(tail(c.seq, 100));
-    return [p10 * 0.5 + p30 * 0.3 + p100 * 0.2, 1.0, "bma"];
+    const p = p10 * 0.5 + p30 * 0.3 + p100 * 0.2;
+    return [0.5 + (p - 0.5) * 1.2, 1.1, `bma=${p.toFixed(2)}`];
 };
+
 const D8 = c => {
+    // meta-consensus: lấy trung bình 4 cửa sổ khác nhau + đo variance
     const ps = [freq(tail(c.seq, 8)), freq(tail(c.seq, 20)), freq(tail(c.seq, 50)), freq(tail(c.seq, 100))];
     const m = ps.reduce((a, b) => a + b, 0) / ps.length;
     const v = ps.reduce((a, b) => a + (b - m) ** 2, 0) / ps.length;
-    return [m, Math.max(0.3, 1.5 - Math.sqrt(v) * 4), `meta${(m * 100).toFixed(0)}`];
+    // agreement cao giữa các scale → tín hiệu mạnh
+    return [0.5 + (m - 0.5) * 1.3, Math.max(0.4, 1.7 - Math.sqrt(v) * 4), `meta m=${m.toFixed(2)} sd=${Math.sqrt(v).toFixed(2)}`];
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -265,59 +339,72 @@ const MODULES = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════
-//  ENSEMBLE ENGINE — kết hợp 32 module
+//  ENSEMBLE ENGINE
 // ═══════════════════════════════════════════════════════════════════
 function analyze(state) {
     const sessions = state.sessions;
-    if (sessions.length < 30) return null;
+    if (sessions.length < 20) return null;
 
     const seq = sessions.map(s => s.result === "TAI" ? "T" : "X");
     const ctx = { seq, sessions, state };
 
+    // ── Chạy tất cả 32 modules ─────────────────────────────────────
     const signals = [];
     for (const [id, fn] of MODULES) {
         try {
-            const [p, w, note] = fn(ctx);
-            const pSafe = clamp(p, 0.05, 0.95);
-            signals.push({ id, p_tai: pSafe * 100, w, note });
-        } catch {
-            signals.push({ id, p_tai: 50, w: 0, note: "err" });
+            const r = fn(ctx);
+            const p = clamp(r[0], 0.05, 0.95);
+            const w = Number.isFinite(r[1]) ? r[1] : 0;
+            const note = r[2] || "";
+            signals.push({ id, p_tai: p * 100, w, note });
+        } catch (e) {
+            signals.push({ id, p_tai: 50, w: 0, note: "err:" + e.message.slice(0, 20) });
         }
     }
 
-    // ── Ensemble 1: weighted mean (xác suất trung bình có trọng số) ──
+    // ── Ensemble 1: weighted mean ──────────────────────────────────
     let num = 0, den = 0;
     for (const s of signals) { num += s.p_tai * s.w; den += s.w; }
-    const pMean = den ? num / den / 100 : 0.5;
+    const pMean = den > 0 ? num / den / 100 : 0.5;
 
-    // ── Ensemble 2: log-odds pooling (hợp nhất Bayes) ──
-    let lo = 0, lw = 0;
+    // ── Ensemble 2: log-odds pooling ───────────────────────────────
+    let loSum = 0, loW = 0;
     for (const s of signals) {
         if (s.w <= 0) continue;
-        const p = Math.max(0.02, Math.min(0.98, s.p_tai / 100));
-        lo += Math.log(p / (1 - p)) * s.w;
-        lw += s.w;
+        const p = Math.max(0.03, Math.min(0.97, s.p_tai / 100));
+        loSum += Math.log(p / (1 - p)) * s.w;
+        loW += s.w;
     }
-    const pLog = lw ? sig(lo / lw) : 0.5;
+    const pLog = loW > 0 ? sig(loSum / loW) : 0.5;
 
-    // ── Blend 50/50 ──
-    const pTai = pMean * 0.5 + pLog * 0.5;
+    // ── Blend 40/60 ────────────────────────────────────────────────
+    let pBlend = pMean * 0.4 + pLog * 0.6;
 
-    // ── Agreement ──
+    // ── Amplify: đẩy nhẹ ra khỏi 0.5 để quyết đoán hơn ────────────
+    const strength = signals
+        .filter(s => s.w > 0)
+        .reduce((sum, s) => sum + Math.abs(s.p_tai - 50) * s.w, 0) /
+        (signals.filter(s => s.w > 0).reduce((sum, s) => sum + s.w, 0) || 1);
+    const ampK = 1.2 + Math.min(0.6, strength / 10); // 1.2 → 1.8
+    const delta = pBlend - 0.5;
+    const pFinal = clamp(0.5 + delta * ampK, 0.12, 0.88);
+
+    // ── Agreement ──────────────────────────────────────────────────
     const active = signals.filter(s => s.w > 0);
-    const predict = pTai >= 0.5 ? "TAI" : "XIU";
+    const predict = pFinal >= 0.5 ? "TAI" : "XIU";
     const agree = active.length
         ? active.filter(s => (s.p_tai >= 50) === (predict === "TAI")).length / active.length * 100
         : 50;
-    const conf = Math.max(pTai, 1 - pTai) * 100;
+    const conf = Math.max(pFinal, 1 - pFinal) * 100;
 
-    // ── Tier ──
+    // ── Tier ───────────────────────────────────────────────────────
     let tier = "WEAK";
     if (conf >= 60 && agree >= 70) tier = "STRONG";
     else if (conf >= 55 && agree >= 60) tier = "OK";
+    else if (conf >= 53 && agree >= 55) tier = "OK";
     else if (agree < 40) tier = "SPLIT";
 
-    // ── Wilson lower bound ──
+    // ── Wilson lower bound ─────────────────────────────────────────
     const h = state.history.slice(-100);
     let wilson = 0;
     if (h.length >= 20) {
@@ -328,9 +415,15 @@ function analyze(state) {
         wilson = Math.max(0, c - m) * 100;
     }
 
+    // ── Top signals (cho debug) ───────────────────────────────────
+    const top = signals.slice().sort((a, b) => b.w - a.w).slice(0, 8)
+        .map(s => `${s.id}:${s.p_tai.toFixed(1)}%`);
+
     return {
         predict, confidence: conf, tier, agreement: agree, wilson,
-        p_tai: pTai * 100, p_xiu: (1 - pTai) * 100,
+        p_tai: pFinal * 100, p_xiu: (1 - pFinal) * 100,
+        pMean: pMean * 100, pLog: pLog * 100,
+        signals, top, activeCount: active.length,
     };
 }
 
@@ -339,67 +432,119 @@ function analyze(state) {
 // ═══════════════════════════════════════════════════════════════════
 function parseHu(data) {
     if (!data?.list || !Array.isArray(data.list)) return [];
-    return data.list.sort((a, b) => b.id - a.id).map(it => ({
-        id: it.id, dices: it.dices, point: it.point,
-        result: it.point >= 11 ? "TAI" : "XIU",
-        result_vn: it.point >= 11 ? "Tài" : "Xỉu",
-    })).sort((a, b) => a.id - b.id);
+    return data.list
+        .sort((a, b) => a.id - b.id)
+        .map(it => ({
+            id: it.id,
+            dices: it.dices,
+            point: it.point,
+            result: it.point >= 11 ? "TAI" : "XIU",
+            result_vn: it.point >= 11 ? "Tài" : "Xỉu",
+        }));
 }
 function parseMd5(data) {
     if (!data?.list || !Array.isArray(data.list)) return [];
-    return data.list.sort((a, b) => b.id - a.id).map(it => ({
-        id: it.id, dices: it.dices, point: it.point,
-        result: it.resultTruyenThong === "Tài" ? "TAI" : "XIU",
-        result_vn: it.resultTruyenThong,
-    })).sort((a, b) => a.id - b.id);
+    return data.list
+        .sort((a, b) => a.id - b.id)
+        .map(it => ({
+            id: it.id,
+            dices: it.dices,
+            point: it.point,
+            result: (it.resultTruyenThong === "Tài" || it.point >= 11) ? "TAI" : "XIU",
+            result_vn: it.resultTruyenThong || (it.point >= 11 ? "Tài" : "Xỉu"),
+        }));
 }
 
 // ═══════════════════════════════════════════════════════════════════
 //  STATE
 // ═══════════════════════════════════════════════════════════════════
-const mkState = () => ({ sessions: [], lastId: null, history: [], lastPred: null, lastFetchAt: 0 });
+const mkState = () => ({
+    sessions: [], lastId: null, history: [], lastPred: null,
+    lastFetchAt: 0, lastFetchOk: false, lastError: null, fetchCount: 0,
+});
 const stateHu = mkState(), stateMd5 = mkState();
 
 function updateState(state, arr) {
-    if (!arr.length) return;
+    state.fetchCount++;
+    state.lastFetchAt = Date.now();
+    state.lastFetchOk = true;
+    state.lastError = null;
+
+    if (!arr || !arr.length) return;
+
     const latest = arr[arr.length - 1].id;
-    if (!state.lastId) { state.sessions = arr; state.lastId = latest; console.log(`✅ Loaded ${arr.length}`); return; }
+
+    if (!state.lastId) {
+        state.sessions = arr.slice();
+        state.lastId = latest;
+        console.log(`✅ [${state === stateHu ? "HU" : "MD5"}] Loaded ${arr.length} sessions · last=${latest}`);
+        return;
+    }
+
     if (latest > state.lastId) {
         const news = arr.filter(r => r.id > state.lastId);
         for (const r of news) {
             if (state.lastPred && state.lastPred.session === r.id) {
                 const win = state.lastPred.predict === r.result;
-                state.history.push({ sessionId: r.id, predict: state.lastPred.predict, actual: r.result, result: win ? "WIN" : "LOSE" });
+                state.history.push({
+                    sessionId: r.id,
+                    predict: state.lastPred.predict,
+                    actual: r.result,
+                    result: win ? "WIN" : "LOSE",
+                });
                 if (state.history.length > 500) state.history.shift();
                 state.lastPred = null;
             }
             state.sessions.push(r);
         }
-        if (state.sessions.length > 800) state.sessions = state.sessions.slice(-700);
+        if (state.sessions.length > 1000) state.sessions = state.sessions.slice(-800);
         state.lastId = latest;
-        console.log(`🆕 +${news.length} → ${latest}`);
+        console.log(`🆕 [${state === stateHu ? "HU" : "MD5"}] +${news.length} → ${latest}`);
     }
 }
 
-async function fetchHu() { try { updateState(stateHu, parseHu(await fetchJSON(API_URL_HU))); stateHu.lastFetchAt = Date.now(); } catch (e) { console.error("HU:", e.message); } }
-async function fetchMd5() { try { updateState(stateMd5, parseMd5(await fetchJSON(API_URL_MD5))); stateMd5.lastFetchAt = Date.now(); } catch (e) { console.error("MD5:", e.message); } }
+async function fetchHu() {
+    try {
+        updateState(stateHu, parseHu(await fetchJSON(API_URL_HU)));
+    } catch (e) {
+        stateHu.lastFetchOk = false;
+        stateHu.lastError = e.message;
+        console.error("HU:", e.message);
+    }
+}
+async function fetchMd5() {
+    try {
+        updateState(stateMd5, parseMd5(await fetchJSON(API_URL_MD5)));
+    } catch (e) {
+        stateMd5.lastFetchOk = false;
+        stateMd5.lastError = e.message;
+        console.error("MD5:", e.message);
+    }
+}
 
 function getPrediction(state) {
-    if (state.sessions.length < 30) return null;
+    if (state.sessions.length < 20) return null;
     if (state.lastPred && state.lastPred.session === state.lastId + 1) return state.lastPred.ai_result;
+
     const ai = analyze(state);
     if (!ai) return null;
-    state.lastPred = { session: state.lastId + 1, predict: ai.predict, ai_result: ai };
+
+    state.lastPred = {
+        session: state.lastId + 1,
+        predict: ai.predict,
+        ai_result: ai,
+    };
     return ai;
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  BUILD RESPONSE (đã bỏ bảng điểm & cầu)
+//  BUILD RESPONSE
 // ═══════════════════════════════════════════════════════════════════
 function buildResp(state, game) {
-    if (state.sessions.length < 30) return null;
+    if (state.sessions.length < 20) return null;
     const ai = getPrediction(state);
     if (!ai) return null;
+
     const last = state.sessions[state.sessions.length - 1];
 
     return {
@@ -412,14 +557,18 @@ function buildResp(state, game) {
         Phien_nay: last.id + 1,
         Du_doan: ai.predict === "TAI" ? "tài" : "xỉu",
         Do_tin_cay: `${ai.confidence.toFixed(1)}%`,
-        Ly_do: `ENSEMBLE-32 · Tier ${ai.tier} · Đồng thuận ${ai.agreement.toFixed(0)}%`,
+        Ly_do: `ENSEMBLE-32 · ${ai.tier} · Agree ${ai.agreement.toFixed(0)}% · ${ai.activeCount}/32 mod`,
         AI: {
             engine: "ENSEMBLE-32",
             tier: ai.tier,
             p_tai: +ai.p_tai.toFixed(2),
             p_xiu: +ai.p_xiu.toFixed(2),
+            p_mean: +ai.pMean.toFixed(2),
+            p_log: +ai.pLog.toFixed(2),
             agreement: +ai.agreement.toFixed(1),
             wilson: +ai.wilson.toFixed(2),
+            active_modules: ai.activeCount,
+            top_signals: ai.top,
         },
     };
 }
@@ -427,39 +576,93 @@ function buildResp(state, game) {
 // ═══════════════════════════════════════════════════════════════════
 //  SERVER
 // ═══════════════════════════════════════════════════════════════════
-const checkKey = q => q.key === VALID_KEY ? { valid: true } : { valid: false, error: `Sai key! Ib ${ADMIN}` };
+const checkKey = q => q.key === VALID_KEY
+    ? { valid: true }
+    : { valid: false, error: `Sai key! Ib ${ADMIN}` };
+
 const app = fastify({ logger: false, disableRequestLogging: true });
 app.register(cors, { origin: "*" });
 
 app.get("/", async () => ({
-    status: "ok", admin: ADMIN,
-    engine: "LC79 v9 — ENSEMBLE 32 THUẬT TOÁN / 4 NHÓM",
+    status: "ok",
+    admin: ADMIN,
+    engine: "LC79 v10 — ENSEMBLE 32 THUẬT TOÁN",
     groups: {
         A: "Thống kê & Xác suất (8)",
-        B: "Markov & Chuỗi mẫu (8)",
+        B: "Markov & Pattern (8)",
         C: "Chuỗi thời gian & Lọc (8)",
-        D: "Thông tin & Meta-Ensemble (8)",
+        D: "Thông tin & Meta (8)",
     },
-    hu:  { loaded: stateHu.sessions.length,  last_id: stateHu.lastId },
-    md5: { loaded: stateMd5.sessions.length, last_id: stateMd5.lastId },
+    hu: {
+        loaded: stateHu.sessions.length,
+        last_id: stateHu.lastId,
+        fetch_ok: stateHu.lastFetchOk,
+        err: stateHu.lastError,
+    },
+    md5: {
+        loaded: stateMd5.sessions.length,
+        last_id: stateMd5.lastId,
+        fetch_ok: stateMd5.lastFetchOk,
+        err: stateMd5.lastError,
+    },
 }));
+
+// Debug endpoint — xem chi tiết 32 modules
+app.get("/debug", async req => {
+    const k = checkKey(req.query);
+    if (!k.valid) return { error: k.error };
+    const state = req.query.game === "md5" ? stateMd5 : stateHu;
+    if (state.sessions.length < 20) {
+        return { error: "Chưa đủ dữ liệu", loaded: state.sessions.length, need: 20 };
+    }
+    const ai = analyze(state);
+    return {
+        loaded: state.sessions.length,
+        last_id: state.lastId,
+        p_mean: ai.pMean.toFixed(2),
+        p_log: ai.pLog.toFixed(2),
+        p_final: ai.p_tai.toFixed(2),
+        predict: ai.predict,
+        confidence: ai.confidence.toFixed(1),
+        tier: ai.tier,
+        agreement: ai.agreement.toFixed(1),
+        signals: ai.signals.map(s => ({
+            id: s.id,
+            p: s.p_tai.toFixed(1),
+            w: s.w.toFixed(2),
+            note: s.note,
+        })),
+    };
+});
 
 const route = (game, state) => async (req, rep) => {
     const k = checkKey(req.query);
     if (!k.valid) return rep.status(401).send({ error: k.error });
     const r = buildResp(state, game);
-    return r || rep.status(503).send({ error: `Đang tải ${game}...` });
+    return r || rep.status(503).send({
+        error: `Đang tải ${game}...`,
+        loaded: state.sessions.length,
+        need: 20,
+        fetch_ok: state.lastFetchOk,
+        fetch_err: state.lastError,
+    });
 };
-app.get("/api/taixiu/lc79",  route("HŨ",  stateHu));
+app.get("/api/taixiu/lc79", route("HŨ", stateHu));
 app.get("/api/taixiumd5/lc79", route("MD5", stateMd5));
 
 app.get("/api/taixiu/lc79/history", async (req, rep) => {
-    const k = checkKey(req.query); if (!k.valid) return rep.status(401).send({ error: k.error });
-    return stateHu.sessions.slice(-30).reverse().map(i => ({ session: i.id, dice: i.dices, total: i.point, result: i.result_vn.toLowerCase() }));
+    const k = checkKey(req.query);
+    if (!k.valid) return rep.status(401).send({ error: k.error });
+    return stateHu.sessions.slice(-30).reverse().map(i => ({
+        session: i.id, dice: i.dices, total: i.point, result: i.result_vn.toLowerCase(),
+    }));
 });
 app.get("/api/taixiumd5/lc79/history", async (req, rep) => {
-    const k = checkKey(req.query); if (!k.valid) return rep.status(401).send({ error: k.error });
-    return stateMd5.sessions.slice(-30).reverse().map(i => ({ session: i.id, dice: i.dices, total: i.point, result: i.result_vn.toLowerCase() }));
+    const k = checkKey(req.query);
+    if (!k.valid) return rep.status(401).send({ error: k.error });
+    return stateMd5.sessions.slice(-30).reverse().map(i => ({
+        session: i.id, dice: i.dices, total: i.point, result: i.result_vn.toLowerCase(),
+    }));
 });
 
 app.get("/check-key", async req => req.query.key === VALID_KEY
@@ -467,8 +670,11 @@ app.get("/check-key", async req => req.query.key === VALID_KEY
     : { status: "error", message: `Sai key! Ib ${ADMIN}` });
 
 app.listen({ port: PORT, host: "0.0.0.0" }).then(() => {
-    console.log(`🚀 [${PORT}] LC79 v9 · ENSEMBLE 32 modules online`);
+    console.log(`🚀 [${PORT}] LC79 v10 · ENSEMBLE 32 modules online`);
     setTimeout(() => { fetchHu().catch(() => {}); fetchMd5().catch(() => {}); }, 100);
-    setInterval(() => fetchHu().catch(() => {}), 6000);
-    setInterval(() => fetchMd5().catch(() => {}), 6000);
-}).catch(err => { console.error("Boot:", err.message); process.exit(1); });
+    setInterval(() => fetchHu().catch(() => {}), 5000);
+    setInterval(() => fetchMd5().catch(() => {}), 5000);
+}).catch(err => {
+    console.error("Boot:", err.message);
+    process.exit(1);
+});
