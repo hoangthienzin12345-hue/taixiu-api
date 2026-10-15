@@ -426,9 +426,35 @@ function analyze(state) {
 // ═══════════════════════════════════════════════════════════════════
 //  STATE MANAGEMENT & DATA FETCHING
 // ═══════════════════════════════════════════════════════════════════
-const parseHu = d => d.data || [];
-const parseMd5 = d => d.data || [];
+// ✅ ĐÚNG — parse từ field "list", map đúng cấu trúc
+const parseHu = d => {
+    if (!d?.list || !Array.isArray(d.list)) return [];
+    return d.list
+        .sort((a, b) => b.id - a.id)
+        .map(item => ({
+            id:     item.id,
+            dices:  item.dices || [0, 0, 0],
+            point:  Number(item.point) || 0,
+            result: (Number(item.point) >= 11) ? "TÀI" : "XỈU",
+        }))
+        .sort((a, b) => a.id - b.id); // chrono: cũ → mới
+};
 
+const parseMd5 = d => {
+    if (!d?.list || !Array.isArray(d.list)) return [];
+    return d.list
+        .sort((a, b) => b.id - a.id)
+        .map(item => {
+            const raw = String(item.resultTruyenThong || "").toUpperCase();
+            return {
+                id:     item.id,
+                dices:  item.dices || [0, 0, 0],
+                point:  Number(item.point) || 0,
+                result: raw.includes("TÀI") || raw === "TAI" ? "TÀI" : "XỈU",
+            };
+        })
+        .sort((a, b) => a.id - b.id);
+};
 const mkState = () => ({
     sessions: [], lastId: null, history: [], lastPred: null,
     lastFetchAt: 0, lastFetchOk: false, lastError: null, fetchCount: 0,
