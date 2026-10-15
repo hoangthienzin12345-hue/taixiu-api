@@ -1067,14 +1067,7 @@ function resp(hist, eng) {
         bieu_do_cau: chart(hist),
         du_doan: duDoan,
         do_tin_cay: `${p.conf}%`,
-        wilson: p.wilson ? `${p.wilson}%` : null,
-        regime: p.regime,
-        entropy: p.entropy,
-        change_point: p.cpProb,
-        cau_phat_hien: p.cau || "-",
-        nguon: p.src || "-",
-        top_cau: p.top || [],
-        so_cau_hoat_dong: (p.allBase || 0) + (p.allMeta || 0),
+        
     };
 }
 
@@ -1251,16 +1244,7 @@ console.log(`
 ║  🎯 ${BRIDGES.length} CẦU — ${cats.length} NHÓM CÂN BẰNG:                                          ║
 ${cats.map(([c, n]) => `║     • ${c.padEnd(10)} ${String(n).padStart(2)} (${(n / BRIDGES.length * 100).toFixed(1).padStart(5)}%)                                      ║`).join("\n")}
 ║                                                                          ║
-║  🧠 THUẬT TOÁN LÕI:                                                      ║
-║     • CTW (Krichevsky-Trofimov estimator)                                ║
-║     • Kalman Filter 1D (smoothing p_tai)                                 ║
-║     • Wilson score lower bound (confidence)                              ║
-║     • BMA (Bayesian Model Averaging with decay)                          ║
-║     • HMM Baum-Welch (2-state)                                           ║
-║     • BOCPD (Bayesian change point detection)                            ║
-║     • Monte Carlo simulation                                             ║
-║     • Markov 1/2/3 + weighted + conditional                              ║
-║     • Entropy gate + Hurst + Z-score + chi²                              ║
+║                                ║
 ║                                                                          ║
 ║  📌 API:                                                                 ║
 ║     HŨ    : /api/taixiu/lc79?key=${VALID_KEY}                            ║
