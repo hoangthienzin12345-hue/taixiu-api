@@ -758,33 +758,17 @@ function updateHistory(newSessions) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  FASTIFY SERVER
+//  FASTIFY SERVER + FULL API ENDPOINTS
 // ═══════════════════════════════════════════════════════════════════
 const app = fastify({ logger: false });
 await app.register(cors, { origin: "*" });
 
-app.get("/", async (req, reply) => {
-    return reply.type("text/plain").send(
-        `🤖 LC79 ENGINE — CTW + BMA + Kalman + HMM + PatternLearner\n` +
-        `📊 History: ${history.length} phiên\n` +
-        `🎯 Tỷ lệ: ${stats.total ? (stats.wins / stats.total * 100).toFixed(1) : 0}% (${stats.wins}/${stats.total})\n` +
-        `👑 Admin: ${ADMIN}`
-    );
-});
-
-app.get("/predict", async (req, reply) => {
-    const key = req.query.key;
-    if (key !== VALID_KEY) {
-        return reply.code(403).send({ error: "Invalid key" });
-    }
-
-    // Fetch từ 2 nguồn song song
+// ─── Helper: fetch + merge 2 nguồn ────────────────────────────────
+async function refreshHistory() {
     const [hu, md5] = await Promise.all([
         fetchSessions(API_HU),
         fetchSessions(API_MD5),
     ]);
-
-    // Chọn nguồn có dữ liệu nhiều hơn / mới hơn
     const merged = new Map();
     for (const s of [...hu, ...md5]) {
         if (!merged.has(s.session) || merged.get(s.session).total === 0) {
@@ -792,63 +776,244 @@ app.get("/predict", async (req, reply) => {
         }
     }
     const all = Array.from(merged.values()).sort((a, b) => b.session - a.session);
-
     updateHistory(all);
+    return all;
+}
+
+// ─── Auth middleware ──────────────────────────────────────────────
+function checkKey(req, reply) {
+    const key = req.query.key || req.headers["x-api-key"];
+    if (key !== VALID_KEY) {
+        reply.code(403).send({ ok: false, error: "Invalid key" });
+        return false;
+    }
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  GET /  — Health check
+// ═══════════════════════════════════════════════════════════════════
+app.get("/", async (req, reply) => {
+    return reply.type("text/plain").send(
+        `🤖 LC79 ENGINE — CTW + BMA + Kalman + HMM + PatternLearner\n` +
+        `📊 History: ${history.length} phiên\n` +
+        `🎯 Tỷ lệ: ${stats.total ? (stats.wins / stats.total * 100).toFixed(1) : 0}% (${stats.wins}/${stats.total})\n` +
+        `👑 Admin: ${ADMIN}\n` +
+        `📡 Endpoints:\n` +
+        `   /predict?key=...        → Dự đoán phiên tiếp theo\n` +
+        `   /predict/detail?key=... → Dự đoán + chi tiết signals\n` +
+        `   /history?key=...        → Lịch sử phiên (mới nhất trước)\n` +
+        `   /history/chart?key=...  → Biểu đồ cầu N phiên\n` +
+        `   /stats?key=...          → Thống kê BMA + pattern learner\n` +
+        `   /sessions?key=...       → Raw danh sách phiên\n` +
+        `   /reset?key=...          → Reset engine (chỉ admin)\n`
+    );
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  GET /predict  — Dự đoán gọn
+// ═══════════════════════════════════════════════════════════════════
+app.get("/predict", async (req, reply) => {
+    if (!checkKey(req, reply)) return;
+
+    await refreshHistory();
 
     if (history.length < 12) {
         return reply.send({
+            ok: false,
             admin: ADMIN,
             error: "Chưa đủ dữ liệu",
             history_count: history.length,
         });
     }
 
-    // Chạy dự đoán
     const result = engine.predict(history);
+    const prev = history[0];
+    const nextSession = prev.session + 1;
 
     // Lưu eval để lần sau chấm điểm
-    const prevSession = history[0].session;
-    const nextSession = prevSession + 1;
     lastEval = {
-        session: prevSession,
+        session: prev.session,
         pred: result.pred,
         signals: result.signals,
         patternId: result.pattern?.id || null,
     };
 
-    // Build chart
-    const ch = chart(history);
-
-    // Tỷ lệ hiển thị (dùng confidence)
-    const rate = result.conf.toFixed(1);
-
-    // Response gọn
-    const prev = history[0];
-    const response = {
+    return reply.send({
+        ok: true,
         admin: ADMIN,
         phien_truoc: `#${prev.session}`,
         xuc_xac: `${prev.dice[0]}-${prev.dice[1]}-${prev.dice[2]}`,
         ket_qua: prev.result,
-        bieu_do_cau: ch,
+        bieu_do_cau: chart(history),
         phien_hien_tai: `#${nextSession}`,
         du_doan: result.pred,
-        ty_le: `${rate}%`,
-    };
-
-    return reply.send(response);
+        ty_le: `${result.conf.toFixed(1)}%`,
+    });
 });
 
+// ═══════════════════════════════════════════════════════════════════
+//  GET /predict/detail  — Dự đoán + chi tiết signals
+// ═══════════════════════════════════════════════════════════════════
+app.get("/predict/detail", async (req, reply) => {
+    if (!checkKey(req, reply)) return;
+
+    await refreshHistory();
+
+    if (history.length < 12) {
+        return reply.send({
+            ok: false,
+            admin: ADMIN,
+            error: "Chưa đủ dữ liệu",
+            history_count: history.length,
+        });
+    }
+
+    const result = engine.predict(history);
+    const prev = history[0];
+    const nextSession = prev.session + 1;
+
+    lastEval = {
+        session: prev.session,
+        pred: result.pred,
+        signals: result.signals,
+        patternId: result.pattern?.id || null,
+    };
+
+    // Sắp xếp signals theo trọng số hiệu dụng
+    const bmaW = engine.bma.weights();
+    const enrichedSignals = result.signals.map(s => ({
+        id: s.id,
+        name: s.name,
+        du_doan: s.p_tai >= 50 ? "Tài" : "Xỉu",
+        p_tai: Number(s.p_tai.toFixed(2)),
+        w_heuristic: Number(s.w.toFixed(3)),
+        w_bma: Number((bmaW[s.id] ?? 0).toFixed(4)),
+        w_eff: Number((s.w * (bmaW[s.id] ?? 1 / result.signals.length)).toFixed(4)),
+        src: s.src,
+        pattern_id: s.pattern_id || null,
+        pattern_pred: s.pattern_pred || null,
+    })).sort((a, b) => b.w_eff - a.w_eff);
+
+    // Đếm đồng thuận
+    const agree = enrichedSignals.filter(s => s.du_doan === result.pred).length;
+
+    return reply.send({
+        ok: true,
+        admin: ADMIN,
+        phien_truoc: `#${prev.session}`,
+        xuc_xac: `${prev.dice[0]}-${prev.dice[1]}-${prev.dice[2]}`,
+        ket_qua: prev.result,
+        bieu_do_cau: chart(history),
+        phien_hien_tai: `#${nextSession}`,
+        du_doan: result.pred,
+        ty_le: `${result.conf.toFixed(1)}%`,
+        chi_tiet: {
+            p_tai: Number(result.pTai.toFixed(2)),
+            p_xiu: Number(result.pXiu.toFixed(2)),
+            entropy: Number((result.entropy ?? 0).toFixed(4)),
+            so_module: result.signals.length,
+            so_dong_thuan: agree,
+            ty_le_dong_thuan: Number((agree / result.signals.length * 100).toFixed(1)),
+            cau_hien_tai: result.pattern ? {
+                id: result.pattern.id,
+                ten: result.pattern.name,
+                du_doan: result.pattern.pred,
+                do_tin_cay: result.pattern.conf,
+                mo_ta: result.pattern.src,
+            } : null,
+            signals: enrichedSignals,
+        },
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  GET /history  — Lịch sử phiên (mới nhất trước)
+// ═══════════════════════════════════════════════════════════════════
+app.get("/history", async (req, reply) => {
+    if (!checkKey(req, reply)) return;
+
+    await refreshHistory();
+
+    const limit = Math.min(Number(req.query.limit) || 50, 500);
+    const items = history.slice(0, limit).map(h => ({
+        phien: h.session,
+        xuc_xac: `${h.dice[0]}-${h.dice[1]}-${h.dice[2]}`,
+        tong: h.total,
+        ket_qua: h.result,
+    }));
+
+    return reply.send({
+        ok: true,
+        admin: ADMIN,
+        tong_phien: history.length,
+        hien_thi: items.length,
+        items,
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  GET /history/chart  — Biểu đồ cầu N phiên
+// ═══════════════════════════════════════════════════════════════════
+app.get("/history/chart", async (req, reply) => {
+    if (!checkKey(req, reply)) return;
+
+    await refreshHistory();
+
+    const n = Math.min(Number(req.query.n) || N_CHART, 200);
+    const slice = history.slice(0, n);
+    const ch = slice.slice().reverse().map(x => toC(x.result)).join("");
+
+    // Thống kê chuỗi bệt hiện tại
+    const st = streaks(history);
+    const cur = st[0] || { type: "-", len: 0 };
+
+    return reply.send({
+        ok: true,
+        admin: ADMIN,
+        so_phien: slice.length,
+        bieu_do: ch,
+        chuoi_hien_tai: {
+            ket_qua: cur.type,
+            do_dai: cur.len,
+        },
+        thong_ke: {
+            tai: slice.filter(x => x.result === "Tài").length,
+            xiu: slice.filter(x => x.result === "Xỉu").length,
+        },
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  GET /sessions  — Raw danh sách phiên
+// ═══════════════════════════════════════════════════════════════════
+app.get("/sessions", async (req, reply) => {
+    if (!checkKey(req, reply)) return;
+
+    await refreshHistory();
+
+    const limit = Math.min(Number(req.query.limit) || 30, 200);
+    return reply.send({
+        ok: true,
+        admin: ADMIN,
+        count: history.length,
+        sessions: history.slice(0, limit),
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  GET /stats  — Thống kê BMA + pattern learner
+// ═══════════════════════════════════════════════════════════════════
 app.get("/stats", async (req, reply) => {
-    const key = req.query.key;
-    if (key !== VALID_KEY) return reply.code(403).send({ error: "Invalid key" });
+    if (!checkKey(req, reply)) return;
 
     const bmaW = engine.bma.weights();
     const topSignals = Object.entries(bmaW)
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 12)
+        .slice(0, 20)
         .map(([id, w]) => ({
             id,
-            weight: Number(w.toFixed(3)),
+            weight: Number(w.toFixed(4)),
             hits: engine.bma.hits[id] || 0,
             total: engine.bma.totals[id] || 0,
             acc: engine.bma.totals[id]
@@ -866,6 +1031,7 @@ app.get("/stats", async (req, reply) => {
     })).sort((a, b) => b.acc - a.acc);
 
     return reply.send({
+        ok: true,
         admin: ADMIN,
         history: history.length,
         bot: {
@@ -880,9 +1046,39 @@ app.get("/stats", async (req, reply) => {
     });
 });
 
+// ═══════════════════════════════════════════════════════════════════
+//  GET /reset  — Reset engine + history (chỉ admin)
+// ═══════════════════════════════════════════════════════════════════
+app.get("/reset", async (req, reply) => {
+    if (!checkKey(req, reply)) return;
+    const confirm = req.query.confirm;
+    if (confirm !== "yes") {
+        return reply.send({ ok: false, error: "Cần ?confirm=yes" });
+    }
+    history = [];
+    lastEval = null;
+    stats = { wins: 0, total: 0, streak: 0 };
+    engine.bma = new BMA(0.97);
+    engine.kalman = new Kalman1D(0.02, 0.15);
+    engine.learner = new PatternLearner();
+    return reply.send({ ok: true, admin: ADMIN, msg: "Đã reset toàn bộ engine + history" });
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  LISTEN
+// ═══════════════════════════════════════════════════════════════════
 app.listen({ port: PORT, host: "0.0.0.0" }, (err, addr) => {
     if (err) { console.error(err); process.exit(1); }
     console.log(`🚀 LC79 Engine @ ${addr}`);
     console.log(`👑 Admin: ${ADMIN}`);
-    console.log(`🔑 Key: ${VALID_KEY}`);
+    console.log(`🔑 Key:   ${VALID_KEY}`);
+    console.log(`📡 APIs:`);
+    console.log(`   GET /                       → health check`);
+    console.log(`   GET /predict?key=...        → dự đoán gọn`);
+    console.log(`   GET /predict/detail?key=... → dự đoán + signals`);
+    console.log(`   GET /history?key=...        → lịch sử phiên`);
+    console.log(`   GET /history/chart?key=...  → biểu đồ cầu`);
+    console.log(`   GET /stats?key=...          → thống kê BMA`);
+    console.log(`   GET /sessions?key=...       → raw sessions`);
+    console.log(`   GET /reset?key=...&confirm=yes → reset engine`);
 });
