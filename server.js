@@ -2,1057 +2,503 @@ import fastify from "fastify";
 import cors from "@fastify/cors";
 import fetch from "node-fetch";
 
-// ═══════════════════════════════════════════════════════════════════
-//  CONFIG
-// ═══════════════════════════════════════════════════════════════════
-const PORT      = process.env.PORT || 3000;
+// ==================== CẤU HÌNH ====================
+const PORT = 3000;
 const VALID_KEY = "Thien456";
-const ADMIN     = "@ADMNLc79";
-const N_CHART   = 30;
-const MAX_HIST  = 500;
+const ADMIN_ID = "@ADMNLc79";
 
-const API_HU  = "https://wtx.tele68.com/v1/tx/lite-sessions?cp=R&cl=R&pf=web&at=83991213bfd4c554dc94bcd98979bdc5";
-const API_MD5 = "https://wtxmd52.tele68.com/v1/txmd5/sessions";
+// ==================== API URLs ====================
+const API_URL_HU  = "https://wtx.tele68.com/v1/tx/lite-sessions?cp=R&cl=R&pf=web&at=83991213bfd4c554dc94bcd98979bdc5";
+const API_URL_MD5 = "https://wtxmd52.tele68.com/v1/txmd5/sessions";
 
-// ═══════════════════════════════════════════════════════════════════
-//  SAFE MATH HELPERS
-// ═══════════════════════════════════════════════════════════════════
-const fin   = (x, f = 0.5) => Number.isFinite(x) ? x : f;
-const clamp = (p, lo = 0.05, hi = 0.95) => Number.isFinite(p) ? Math.max(lo, Math.min(hi, p)) : 0.5;
-const softmax = (arr) => {
-    const safe = arr.map(v => Number.isFinite(v) ? v : -50);
-    const mx = Math.max(...safe, -50);
-    const ex = safe.map(v => Math.exp(v - mx));
-    const Z  = ex.reduce((a, b) => a + b, 0) || 1;
-    return ex.map(v => fin(v / Z, 0));
-};
-const sigmoid = (x) => {
-    x = Math.max(-30, Math.min(30, fin(x, 0)));
-    return 1 / (1 + Math.exp(-x));
-};
-const logit = (p) => {
-    p = clamp(p);
-    return Math.log(p / (1 - p));
-};
+// ==================== CÁC MẪU CẦU ====================
+// lens: độ dài các đoạn liên tiếp (mới nhất đứng trước), tự động đảo Tài/Xỉu
+const PATTERNS = [
+    { name: "1-1",       lens: [1,1,1,1],     weight: 72 },
+    { name: "2-2",       lens: [2,2,2],       weight: 76 },
+    { name: "2-1-2",     lens: [2,1,2],       weight: 80 },
+    { name: "3-1-3",     lens: [3,1,3],       weight: 82 },
+    { name: "3-3",       lens: [3,3,3],       weight: 78 },
+    { name: "2-3-2",     lens: [2,3,2],       weight: 80 },
+    { name: "3-2-3",     lens: [3,2,3],       weight: 82 },
+    { name: "Kép 4",     lens: [2,2,2,2],     weight: 74 },
+    { name: "ZigZag",    lens: [1,1,1,1,1],   weight: 70 }
+];
 
-function lgamma(x) {
-    if (!Number.isFinite(x) || x <= 0) return 0;
-    const g = 7;
-    const C = [
-        0.99999999999980993, 676.5203681218851, -1259.1392167224028,
-        771.32342877765313, -176.61502916214059, 12.507343278686905,
-        -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7,
-    ];
-    if (x < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * x)) - lgamma(1 - x);
-    x -= 1;
-    let a = C[0];
-    const t = x + g + 0.5;
-    for (let i = 1; i < g + 2; i++) a += C[i] / (x + i);
-    const r = 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
-    return Number.isFinite(r) ? r : 0;
+// ==================== MATCH PATTERN ====================
+function matchPattern(seq, lens) {
+    let idx = 0;
+    const segs = [];
+    for (const len of lens) {
+        if (idx + len > seq.length) return null;
+        const seg = seq.slice(idx, idx + len);
+        if (!seg.every(x => x === seg[0])) return null;
+        segs.push(seg[0]);
+        idx += len;
+    }
+    for (let i = 1; i < segs.length; i++) {
+        if (segs[i] === segs[i - 1]) return null;
+    }
+    // Đoán ngược lại với đoạn mới nhất
+    return { pred: segs[0] === "Tài" ? "Xỉu" : "Tài", segs };
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  DATA UTILS
-// ═══════════════════════════════════════════════════════════════════
-function norm(val, point) {
-    if (val != null) {
-        const s = String(val).toLowerCase().trim();
-        if (["tài","tai","t","big"].includes(s)) return "Tài";
-        if (["xỉu","xiu","x","small"].includes(s)) return "Xỉu";
+// ==================== MARKOV (bậc 1, 2) ====================
+function markov(seqOld, order) {
+    if (seqOld.length < order + 4) return null;
+    const counts = {};
+    for (let i = order; i < seqOld.length; i++) {
+        const key = seqOld.slice(i - order, i).join("|");
+        if (!counts[key]) counts[key] = { "Tài": 0, "Xỉu": 0 };
+        counts[key][seqOld[i]]++;
     }
-    return Number(point) >= 11 ? "Tài" : "Xỉu";
-}
-const opp     = x => x === "Tài" ? "Xỉu" : "Tài";
-const toB     = r => r === "Tài" ? 1 : 0;
-const toC     = r => r === "Tài" ? "T" : "X";
-const chrono  = (h, n = 200) => h.slice(0, n).map(x => x.result).reverse();
-const bitsOf  = (h, n = 200) => chrono(h, n).map(toB);
-const charsOf = (h, n = 200) => chrono(h, n).map(toC).join("");
-const chart   = h => h.slice(0, N_CHART).reverse().map(x => toC(x.result)).join("");
-
-function streaks(h) {
-    if (!h.length) return [];
-    const out = [];
-    let t = h[0].result, l = 1;
-    for (let i = 1; i < h.length; i++) {
-        if (h[i].result === t) l++;
-        else { out.push({ type: t, len: l }); t = h[i].result; l = 1; }
-    }
-    out.push({ type: t, len: l });
-    return out;
+    const recentKey = seqOld.slice(-order).join("|");
+    const c = counts[recentKey];
+    if (!c) return null;
+    const total = c["Tài"] + c["Xỉu"];
+    if (total < 3) return null;
+    const pred = c["Tài"] > c["Xỉu"] ? "Tài" : "Xỉu";
+    const conf = Math.round(50 + (Math.abs(c["Tài"] - c["Xỉu"]) / total) * 50);
+    return { pred, weight: conf, name: `Markov${order} (${c["Tài"]}-${c["Xỉu"]})` };
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  ALGORITHM 1: CTW (Context Tree Weighting)
-// ═══════════════════════════════════════════════════════════════════
-function ktProb(a, b) {
-    if (a === 0 && b === 0) return 0.5;
-    const num = lgamma(a + 0.5) - lgamma(0.5) + lgamma(b + 0.5) - lgamma(0.5);
-    const den = lgamma(a + b + 1) - lgamma(1);
-    const r = Math.exp(num - den);
-    return Number.isFinite(r) && r > 0 ? r : 0.5;
-}
-function ctwPredict(chars, maxDepth = 6) {
-    const n = chars.length;
-    if (n < 10) return { p: 0.5, depth: 0, n: 0 };
-    const scores = [];
-    for (let d = 1; d <= Math.min(maxDepth, n - 1); d++) {
-        const ctx = chars.slice(-d);
-        let ct = 0, cx = 0;
-        for (let i = 0; i < n - d; i++) {
-            if (chars.slice(i, i + d) === ctx) {
-                if (chars[i + d] === "T") ct++; else cx++;
-            }
-        }
-        const ll = Math.log(Math.max(ktProb(ct, cx), 1e-12));
-        scores.push({ d, ct, cx, ll: Number.isFinite(ll) ? ll : -50 });
-    }
-    if (!scores.length) return { p: 0.5, depth: 0, n: 0 };
-    const W = softmax(scores.map(s => s.ll));
-    let p = 0, total = 0;
-    for (let i = 0; i < scores.length; i++) {
-        const s = scores[i];
-        const pD = (s.ct + 0.5) / (s.ct + s.cx + 1);
-        p += W[i] * pD;
-        total += s.ct + s.cx;
-    }
-    return { p: fin(p, 0.5), depth: scores[0].d, n: total };
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  ALGORITHM 2: KALMAN FILTER 1D
-// ═══════════════════════════════════════════════════════════════════
-class Kalman1D {
-    constructor(q = 0.02, r = 0.15) { this.x = 0.5; this.P = 1.0; this.Q = q; this.R = r; }
-    update(z) {
-        if (!Number.isFinite(z)) return this.x;
-        const PPred = this.P + this.Q;
-        const K = PPred / (PPred + this.R);
-        this.x = this.x + K * (z - this.x);
-        this.P = (1 - K) * PPred;
-        if (!Number.isFinite(this.x)) this.x = 0.5;
-        if (!Number.isFinite(this.P)) this.P = 1.0;
-        return this.x;
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  ALGORITHM 3: WILSON SCORE INTERVAL
-// ═══════════════════════════════════════════════════════════════════
-function wilsonLB(wins, total, z = 1.96) {
-    if (!Number.isFinite(wins) || !Number.isFinite(total) || total <= 0) return 0;
-    const p = wins / total, n = total;
-    const denom  = 1 + z * z / n;
-    const center = (p + z * z / (2 * n)) / denom;
-    const margin = z * Math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom;
-    const r = center - margin;
-    return Number.isFinite(r) && r > 0 ? r : 0;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  ALGORITHM 4: BMA (Bayesian Model Averaging)
-// ═══════════════════════════════════════════════════════════════════
-class BMA {
-    constructor(decay = 0.97) {
-        this.log_w = {};
-        this.decay = decay;
-        this.hits = {};
-        this.totals = {};
-    }
-    weights() {
-        const names = Object.keys(this.log_w).filter(n => Number.isFinite(this.log_w[n]));
-        if (!names.length) return {};
-        const mx = Math.max(...names.map(n => this.log_w[n]));
-        const ex = names.map(n => Math.exp(this.log_w[n] - mx));
-        const Z = ex.reduce((a, b) => a + b, 0) || 1;
-        const out = {};
-        names.forEach((n, i) => out[n] = fin(ex[i] / Z, 0));
-        return out;
-    }
-    predict(signals) {
-        if (!signals.length) return 50;
-        const W = this.weights();
-        const hasW = Object.keys(W).length > 0;
-        let num = 0, den = 0;
-        for (const s of signals) {
-            const pt = Number.isFinite(s.p_tai) ? s.p_tai : 50;
-            const w = hasW ? fin(W[s.id], 1 / signals.length) : (1 / signals.length);
-            num += w * pt;
-            den += w;
-        }
-        return den > 0 && Number.isFinite(num / den) ? num / den : 50;
-    }
-    update(signals, actual) {
-        const y = actual === "Tài" ? 1 : 0;
-        for (const s of signals) {
-            if (!(s.id in this.log_w)) this.log_w[s.id] = 0;
-            const p = clamp((Number.isFinite(s.p_tai) ? s.p_tai : 50) / 100, 0.05, 0.95);
-            const ll = y * Math.log(p) + (1 - y) * Math.log(1 - p);
-            const nw = this.decay * this.log_w[s.id] + (1 - this.decay) * ll * 10;
-            this.log_w[s.id] = Number.isFinite(nw) ? nw : 0;
-            this.totals[s.id] = (this.totals[s.id] || 0) + 1;
-            if ((p >= 0.5 ? "Tài" : "Xỉu") === actual) this.hits[s.id] = (this.hits[s.id] || 0) + 1;
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  ALGORITHM 5: HMM (Baum-Welch)
-// ═══════════════════════════════════════════════════════════════════
-class HMM {
-    constructor() {
-        this.n = 2;
-        this.A = [[0.5, 0.5], [0.5, 0.5]];
-        this.B = [[0.7, 0.3], [0.3, 0.7]];
-        this.pi = [0.5, 0.5];
-    }
-    forward(obs) {
-        const T = obs.length;
-        if (!T) return [];
-        const a = Array.from({ length: T }, () => [0, 0]);
-        for (let i = 0; i < 2; i++) a[0][i] = this.pi[i] * this.B[i][obs[0]];
-        let z = a[0][0] + a[0][1] || 1;
-        for (let i = 0; i < 2; i++) a[0][i] /= z;
-        for (let t = 1; t < T; t++) {
-            for (let j = 0; j < 2; j++) {
-                let s = 0;
-                for (let i = 0; i < 2; i++) s += a[t - 1][i] * this.A[i][j];
-                a[t][j] = s * this.B[j][obs[t]];
-            }
-            z = a[t][0] + a[t][1] || 1;
-            for (let j = 0; j < 2; j++) a[t][j] /= z;
-        }
-        return a;
-    }
-    backward(obs) {
-        const T = obs.length;
-        if (!T) return [];
-        const b = Array.from({ length: T }, () => [0, 0]);
-        b[T - 1] = [1, 1];
-        for (let t = T - 2; t >= 0; t--) {
-            for (let i = 0; i < 2; i++) {
-                let s = 0;
-                for (let j = 0; j < 2; j++) s += this.A[i][j] * this.B[j][obs[t + 1]] * b[t + 1][j];
-                b[t][i] = s;
-            }
-            const z = b[t][0] + b[t][1] || 1;
-            for (let i = 0; i < 2; i++) b[t][i] /= z;
-        }
-        return b;
-    }
-    baumWelch(obs, iters = 2) {
-        const T = obs.length;
-        if (T < 15) return;
-        for (let it = 0; it < iters; it++) {
-            const alpha = this.forward(obs);
-            const beta  = this.backward(obs);
-            const g = Array.from({ length: T }, (_, t) => {
-                const r = [alpha[t][0] * beta[t][0], alpha[t][1] * beta[t][1]];
-                const z = r[0] + r[1] || 1;
-                return [r[0] / z, r[1] / z];
-            });
-            const nA = [[0, 0], [0, 0]], nB = [[0, 0], [0, 0]];
-            for (let i = 0; i < 2; i++) {
-                for (let j = 0; j < 2; j++) {
-                    let num = 0, den = 0;
-                    for (let t = 0; t < T - 1; t++) {
-                        num += alpha[t][i] * this.A[i][j] * this.B[j][obs[t + 1]] * beta[t + 1][j];
-                        den += g[t][i];
-                    }
-                    nA[i][j] = den > 0 ? num / den : 0.5;
-                }
-            }
-            for (let i = 0; i < 2; i++) {
-                for (let v = 0; v < 2; v++) {
-                    let num = 0, den = 0;
-                    for (let t = 0; t < T; t++) {
-                        if (obs[t] === v) num += g[t][i];
-                        den += g[t][i];
-                    }
-                    nB[i][v] = Math.max(0.01, den > 0 ? num / den : 0.5);
-                }
-            }
-            this.A = nA; this.B = nB;
-        }
-    }
-    predictNext(obs) {
-        if (obs.length < 5) return 0.5;
-        const a = this.forward(obs);
-        if (!a.length) return 0.5;
-        const last = a[a.length - 1];
-        const z = last[0] + last[1] || 1;
-        const p = (last[0] / z) * this.B[0][1] + (last[1] / z) * this.B[1][1];
-        return clamp(fin(p, 0.5));
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  ALGORITHM 6: BOCPD (Bayesian Change Point Detection)
-// ═══════════════════════════════════════════════════════════════════
-class BOCPD {
-    constructor(hazard = 1 / 50) { this.H = hazard; this.a0 = 1; this.b0 = 1; }
-    detect(chars, window = 60) {
-        const arr = chars.slice(-window);
-        if (arr.length < 10) return { prob: 0, runLen: 0 };
-        let R = [1.0], a = [this.a0], b = [this.b0];
-        let maxP = 0;
-        for (const ch of arr) {
-            const x = ch === "T" ? 1 : 0;
-            const pr = R.map((_, r) => a[r] / (a[r] + b[r]));
-            const nR = new Array(R.length + 1).fill(0);
-            const na = new Array(R.length + 1).fill(0);
-            const nb = new Array(R.length + 1).fill(0);
-            for (let r = 0; r < R.length; r++) {
-                nR[r + 1] += R[r] * (1 - this.H) * (x ? pr[r] : 1 - pr[r]);
-                na[r + 1] = a[r] + x;
-                nb[r + 1] = b[r] + (1 - x);
-            }
-            nR[0] = R.reduce((s, v) => s + v, 0) * this.H;
-            na[0] = this.a0 + x;
-            nb[0] = this.b0 + (1 - x);
-            const z = nR.reduce((s, v) => s + v, 0) || 1;
-            for (let i = 0; i < nR.length; i++) nR[i] /= z;
-            R = nR; a = na; b = nb;
-            if (Number.isFinite(R[0])) maxP = Math.max(maxP, R[0]);
-        }
-        let modeR = 0, modeP = 0;
-        for (let r = 0; r < R.length; r++) if (R[r] > modeP) { modeP = R[r]; modeR = r; }
-        return { prob: fin(maxP, 0), runLen: modeR };
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  ALGORITHM 7: MONTE CARLO
-// ═══════════════════════════════════════════════════════════════════
-function monteCarlo(chars, sims = 3000) {
-    const n = chars.length;
-    if (n < 20) return 0.5;
-    const recent = chars.slice(-50);
-    const taiRatio = recent.split("").filter(x => x === "T").length / recent.length;
-    let tai = 0;
-    for (let s = 0; s < sims; s++) {
-        if (Math.random() < 0.7) {
-            if (Math.random() < taiRatio) tai++;
-        } else {
-            let sum = 0;
-            for (let d = 0; d < 3; d++) sum += 1 + Math.floor(Math.random() * 6);
-            if (sum >= 11) tai++;
-        }
-    }
-    return tai / sims;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  ALGORITHM 8: MARKOV N-ORDER
-// ═══════════════════════════════════════════════════════════════════
-function markovN(chars, order, decay = 0.97) {
-    const n = chars.length;
-    if (n < order + 5) return null;
-    const cur = chars.slice(-order);
-    let cT = 0, cX = 0;
-    for (let i = 0; i < n - order; i++) {
-        if (chars.slice(i, i + order) !== cur) continue;
-        const w = Math.pow(decay, n - i);
-        if (chars[i + order] === "T") cT += w; else cX += w;
-    }
-    const tot = cT + cX;
-    if (tot < 1) return null;
-    return { p: fin(cT / tot, 0.5), n: tot };
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  ALGORITHM 9: BAYESIAN BETA DECAY
-// ═══════════════════════════════════════════════════════════════════
-function betaDecay(chars, window = 40, a0 = 6, b0 = 6, decay = 0.95) {
-    const arr = chars.slice(-window).split("");
-    let a = a0, b = b0;
-    const L = arr.length;
-    for (let i = 0; i < L; i++) {
-        const w = Math.pow(decay, L - 1 - i);
-        if (arr[i] === "T") a += w; else b += w;
-    }
-    return fin(a / (a + b), 0.5);
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  ALGORITHM 10: PATTERN DETECTOR (1-1, 2-2, 3-3, 2-1-2, 1-2-3, ...)
-// ═══════════════════════════════════════════════════════════════════
-function detectPattern(chars) {
-    const n = chars.length;
-    if (n < 8) return null;
-
-    // Bệt (streak) — kiểm tra trước
-    const st = [];
-    let cur = chars[n - 1], len = 1;
-    for (let i = n - 2; i >= 0; i--) {
-        if (chars[i] === cur) len++;
-        else { st.push({ t: cur, len }); cur = chars[i]; len = 1; }
-    }
-    st.push({ t: cur, len });
-
-    const s0 = st[0]?.len || 0;
-    const s0t = st[0]?.t || "";
-
-    // Bệt ≥ 4 → theo
-    if (s0 >= 4 && s0 < 9) {
-        return {
-            id: `bet${s0}`, name: `Bệt ${s0} theo`,
-            pred: s0t === "T" ? "Tài" : "Xỉu",
-            conf: 60 + s0 * 2, src: `Bệt ${s0}`
-        };
-    }
-    // Bệt ≥ 9 → bẻ
-    if (s0 >= 9) {
-        return {
-            id: "bet_break", name: `Bẻ bệt ${s0}`,
-            pred: s0t === "T" ? "Xỉu" : "Tài",
-            conf: Math.min(88, 72 + (s0 - 9) * 2), src: `Bẻ bệt ${s0}`
-        };
-    }
-
-    // Pattern phức tạp — khớp đuôi chuỗi
-    const patterns = [
-        { id: "p_1_1",     name: "Cầu 1-1",     seqs: ["TXT", "XTX"],       next: { TXT: "X", XTX: "T" },     conf: 78 },
-        { id: "p_2_2",     name: "Cầu 2-2",     seqs: ["TTXX", "XXTT"],     next: { TTXX: "X", XXTT: "T" },   conf: 76 },
-        { id: "p_3_3",     name: "Cầu 3-3",     seqs: ["TTTXXX", "XXXTTT"], next: { TTTXXX: "X", XXXTTT: "T" }, conf: 74 },
-        { id: "p_2_1_2",   name: "Cầu 2-1-2",   seqs: ["TTXTT", "XXTXX"],   next: { TTXTT: "X", XXTXX: "T" }, conf: 77 },
-        { id: "p_1_2_3",   name: "Cầu 1-2-3",   seqs: ["TXXTTT", "XTTXXX"], next: { TXXTTT: "X", XTTXXX: "T" }, conf: 73 },
-        { id: "p_2_3_2",   name: "Cầu 2-3-2",   seqs: ["TTXXXTT", "XXTTTXX"], next: { TTXXXTT: "X", XXTTTXX: "T" }, conf: 75 },
-        { id: "p_3_1_3",   name: "Cầu 3-1-3",   seqs: ["TTTXTTT", "XXXTXXX"], next: { TTTXTTT: "X", XXXTXXX: "T" }, conf: 75 },
-    ];
-
-    for (const pat of patterns) {
-        for (const seq of pat.seqs) {
-            if (chars.endsWith(seq)) {
-                return {
-                    id: pat.id, name: pat.name,
-                    pred: pat.next[seq] === "T" ? "Tài" : "Xỉu",
-                    conf: pat.conf, src: `${pat.name}`
-                };
+// ==================== LẶP BLOCK ====================
+function blockRepeat(seqOld) {
+    const maxLen = Math.min(15, Math.floor(seqOld.length / 2));
+    for (let len = maxLen; len >= 3; len--) {
+        const suffix = seqOld.slice(-len).join("");
+        for (let i = 0; i <= seqOld.length - len - 1; i++) {
+            if (seqOld.slice(i, i + len).join("") === suffix) {
+                const next = seqOld[i + len];
+                if (next) return { pred: next, weight: Math.min(90, 55 + len * 3), name: `Lặp block ${len}` };
             }
         }
     }
-
-    // Kiểm tra pattern chu kỳ nhỏ ở chuỗi dài (2-2 lặp)
-    for (const P of [2, 3, 4]) {
-        if (n < P * 3 + 1) continue;
-        const tail = chars.slice(-P * 2);
-        if (tail.slice(0, P) === tail.slice(P)) {
-            const nx = chars[n - P];
-            return {
-                id: `cyc_${P}`, name: `Chu kỳ ${P}`,
-                pred: nx === "T" ? "Tài" : "Xỉu",
-                conf: 70, src: `Chu kỳ P=${P}`
-            };
-        }
-    }
-
     return null;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  SELF-LEARNING ENGINE (học cầu từ biểu đồ)
-// ═══════════════════════════════════════════════════════════════════
-class PatternLearner {
-    constructor() {
-        this.stats = {}; // id → { hits, total, streak }
+// ==================== LẶP CHU KÌ ====================
+function cycleDetect(seqOld) {
+    if (seqOld.length < 8) return null;
+    for (let p = 2; p <= 8; p++) {
+        let ok = true;
+        let checks = 0;
+        for (let i = seqOld.length - 1; i >= seqOld.length - p * 2 && i >= p; i--) {
+            if (seqOld[i] !== seqOld[i - p]) { ok = false; break; }
+            checks++;
+        }
+        if (ok && checks >= p * 2) {
+            const next = seqOld[seqOld.length - p];
+            return { pred: next, weight: 72, name: `Chu kì ${p}` };
+        }
     }
-    get(id) {
-        if (!this.stats[id]) this.stats[id] = { hits: 0, total: 0, streak: 0 };
-        return this.stats[id];
-    }
-    update(id, isWin) {
-        const s = this.get(id);
-        s.total++;
-        if (isWin) { s.hits++; s.streak++; }
-        else s.streak = 0;
-    }
-    weight(id) {
-        const s = this.get(id);
-        if (s.total < 3) return 1.0;
-        const acc = s.hits / s.total;
-        // Wilson lower-bound as conservative estimate
-        const lb = wilsonLB(s.hits, s.total, 1.5);
-        const base = 0.5 + lb;
-        const streakBonus = 1 + Math.min(s.streak, 5) * 0.15;
-        return clamp(base * streakBonus, 0.3, 2.5);
-    }
-    rate(id) {
-        const s = this.get(id);
-        return s.total ? s.hits / s.total : 0;
-    }
+    return null;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  ENSEMBLE ENGINE
-// ═══════════════════════════════════════════════════════════════════
-class Engine {
-    constructor() {
-        this.bma = new BMA(0.97);
-        this.kalman = new Kalman1D(0.02, 0.15);
-        this.learner = new PatternLearner();
-        this.lastPred = null;
+// ==================== ENTROPY ====================
+function entropy(seq) {
+    if (!seq.length) return 1;
+    const pT = seq.filter(x => x === "Tài").length / seq.length;
+    const pX = 1 - pT;
+    let h = 0;
+    if (pT > 0) h -= pT * Math.log2(pT);
+    if (pX > 0) h -= pX * Math.log2(pX);
+    return h;
+}
+
+// ==================== BỆT & BẺ BỆT ====================
+function detectBet(seq) {
+    let streak = 1;
+    for (let i = 1; i < seq.length; i++) {
+        if (seq[i] === seq[0]) streak++;
+        else break;
     }
-
-    buildSignals(hist) {
-        const chars = charsOf(hist, 200);
-        const bits  = bitsOf(hist, 200);
-        const n = chars.length;
-        if (n < 12) return null;
-
-        const signals = [];
-
-        // α — CTW
-        const ctw = ctwPredict(chars, 6);
-        signals.push({
-            id: "α", name: "CTW", p_tai: ctw.p * 100,
-            w: ctw.n >= 8 ? 2.5 : 1.2, src: `d${ctw.depth}/n${ctw.n}`
-        });
-
-        // β — Beta decay
-        const beta = betaDecay(chars, 40, 6, 6, 0.95);
-        signals.push({ id: "β", name: "Beta", p_tai: beta * 100, w: 1.5, src: "Bayes" });
-
-        // γ — Autocorrelation lag-1
-        let corr = 0;
-        const shortBits = bits.slice(-50);
-        if (shortBits.length > 10) {
-            let match = 0;
-            for (let i = 0; i < shortBits.length - 1; i++)
-                if (shortBits[i] === shortBits[i + 1]) match++;
-            corr = match / (shortBits.length - 1) - 0.5;
-        }
-        if (Math.abs(corr) >= 0.08 && n > 1) {
-            const ref = chars[n - 1];
-            const pG = (corr > 0)
-                ? (ref === "T" ? 1 : 0)
-                : (ref === "T" ? 0 : 1);
-            signals.push({
-                id: "γ", name: "Autocorr", p_tai: pG * 100,
-                w: Math.min(3, Math.abs(corr) * 7), src: `r${corr >= 0 ? "+" : ""}${corr.toFixed(2)}`
-            });
-        }
-
-        // δ — Streak
-        const st = streaks(hist);
-        const cur = st[0];
-        if (cur) {
-            let pD = 0.5, wD = 0;
-            if (cur.len >= 4 && cur.len < 9) {
-                pD = cur.type === "Tài" ? 0.62 : 0.38;
-                wD = 1.5;
-            } else if (cur.len >= 9) {
-                pD = cur.type === "Tài" ? 0.35 : 0.65;
-                wD = 2.0;
-            } else if (cur.len === 1) {
-                pD = cur.type === "Tài" ? 0.55 : 0.45;
-                wD = 0.5;
-            }
-            if (wD > 0) signals.push({
-                id: "δ", name: "Streak", p_tai: pD * 100, w: wD,
-                src: `${cur.type === "Tài" ? "T" : "X"}×${cur.len}`
-            });
-        }
-
-        // ε — Frequency 20
-        const rec20 = chars.slice(-20);
-        const pE = rec20.split("").filter(x => x === "T").length / rec20.length;
-        signals.push({ id: "ε", name: "Freq20", p_tai: pE * 100, w: 0.7, src: `${(pE * 100).toFixed(0)}%` });
-
-        // ζ — Pattern match (new detector)
-        const pat = detectPattern(chars);
-        if (pat) {
-            const lw = this.learner.weight(pat.id);
-            signals.push({
-                id: "ζ", name: pat.name, p_tai: pat.pred === "Tài" ? pat.conf : 100 - pat.conf,
-                w: 2.2 * lw, src: `${pat.src} ×${lw.toFixed(2)}`,
-                pattern_id: pat.id, pattern_pred: pat.pred, pattern_conf: pat.conf
-            });
-        }
-
-        // η — Base rate adaptive
-        const longWin = chars.slice(-400);
-        const etaBase = 0.4861;
-        const kEta = 80;
-        const pH = (longWin.split("").filter(x => x === "T").length + etaBase * kEta) / (longWin.length + kEta);
-        signals.push({ id: "η", name: "Base", p_tai: pH * 100, w: 0.4, src: `${(pH * 100).toFixed(1)}%` });
-
-        // λ — Dice bias (mean sum)
-        const recent = hist.slice(0, 30);
-        let sumAll = 0, cnt = 0;
-        for (const h of recent) if (h.dice && h.dice.length === 3) {
-            sumAll += h.dice[0] + h.dice[1] + h.dice[2];
-            cnt++;
-        }
-        if (cnt > 0) {
-            const avg = sumAll / (cnt * 3);
-            const pL = sigmoid((avg * 3 - 10.5) * 0.8);
-            const dev = Math.abs(avg - 3.5);
-            const wL = Math.min(2, 0.4 + dev * 0.7);
-            signals.push({ id: "λ", name: "Dice", p_tai: pL * 100, w: wL, src: `avg${avg.toFixed(1)}` });
-        }
-
-        // μ — HMM
-        const hmm = new HMM();
-        const obs = bits.slice(-120);
-        hmm.baumWelch(obs, 2);
-        const pHmm = hmm.predictNext(obs);
-        signals.push({ id: "μ", name: "HMM", p_tai: pHmm * 100, w: 2.2, src: "Baum-Welch" });
-
-        // ν — Sum band transition
-        const recent80 = hist.slice(0, 80);
-        if (recent80.length >= 15) {
-            const band = t => t <= 7 ? 0 : t <= 10 ? 1 : t <= 14 ? 2 : 3;
-            const bands = recent80.map(h => band(h.total || 0));
-            const curBand = bands[0];
-            let tt = 0, tot = 0;
-            for (let i = 1; i < bands.length; i++) {
-                if (bands[i] === curBand) {
-                    tot++;
-                    if (recent80[i - 1].result === "Tài") tt++;
-                }
-            }
-            if (tot >= 3) {
-                signals.push({
-                    id: "ν", name: "Sum-band", p_tai: (tt / tot) * 100,
-                    w: tot >= 8 ? 1.5 : 1.0, src: `b${curBand}/n${tot}`
-                });
-            }
-        }
-
-        // ξ — Markov 2
-        const mk2 = markovN(chars, 2, 0.95);
-        if (mk2) signals.push({
-            id: "ξ", name: "Markov2", p_tai: mk2.p * 100,
-            w: Math.min(2, mk2.n / 4), src: `n=${mk2.n.toFixed(0)}`
-        });
-
-        // π — Monte Carlo
-        const mc = monteCarlo(chars, 2000);
-        signals.push({ id: "π", name: "MonteCarlo", p_tai: mc * 100, w: 1.2, src: "sim" });
-
-        // σ — CTW depth-3
-        const ctw3 = ctwPredict(chars, 3);
-        signals.push({ id: "σ", name: "CTW-d3", p_tai: ctw3.p * 100, w: 1.0, src: `p${(ctw3.p * 100).toFixed(0)}` });
-
-        return { signals, chars, bits, ctw, hmm: pHmm, pat };
+    if (streak >= 9) {
+        return { pred: seq[0] === "Tài" ? "Xỉu" : "Tài", weight: 85, name: `Bẻ bệt ${streak} tay`, streak };
     }
+    if (streak >= 4) {
+        return { pred: seq[0], weight: Math.min(80, 65 + (streak - 4) * 3), name: `Bệt ${streak} tay`, streak };
+    }
+    return { pred: null, weight: 0, name: null, streak };
+}
 
-    predict(hist) {
-        const ctx = this.buildSignals(hist);
-        if (!ctx) return { pred: "Xỉu", conf: 50, signals: [], chart: "", pattern: null };
-
-        const { signals, chars } = ctx;
-
-        // BMA weighted prediction
-        let pTaiRaw = this.bma.predict(signals) / 100;
-        if (!Number.isFinite(pTaiRaw)) pTaiRaw = 0.5;
-
-        // Entropy gate
-        const recent50 = chars.slice(-50);
-        const pT = recent50.split("").filter(x => x === "T").length / recent50.length;
-        let H = 1.0;
-        if (pT > 0 && pT < 1) H = -(pT * Math.log2(pT) + (1 - pT) * Math.log2(1 - pT));
-
-        if (H >= 0.98) {
-            const avg = signals.reduce((a, s) => a + s.p_tai, 0) / signals.length / 100;
-            pTaiRaw = 0.7 * avg + 0.3 * pTaiRaw;
-        } else if (H >= 0.92) {
-            const avg = signals.reduce((a, s) => a + s.p_tai, 0) / signals.length / 100;
-            pTaiRaw = 0.5 * pTaiRaw + 0.5 * avg;
-        }
-
-        // Kalman smoothing
-        const pSmoothed = this.kalman.update(pTaiRaw);
-
-        // Clamp
-        const pFinal = Math.max(0.25, Math.min(0.75, pSmoothed));
-        const pred = pFinal >= 0.5 ? "Tài" : "Xỉu";
-        const conf = Math.max(pFinal, 1 - pFinal) * 100;
-
-        const pat = ctx.pat;
-
+// ==================== DỰ ĐOÁN TỔNG HỢP ====================
+function predictCombo(history) {
+    if (!history || history.length < 3) {
         return {
-            pred, conf, pTai: pFinal * 100, pXiu: (1 - pFinal) * 100,
-            signals, chart: chart(hist),
-            pattern: pat,
-            entropy: H,
-            ctw: ctx.ctw, hmm: ctx.hmm,
+            prediction: "Xỉu",
+            confidence: 55,
+            reason: "Chưa đủ dữ liệu, ưu tiên Xỉu",
+            votes: [],
+            streak: 1,
+            entropy: 1,
+            taiScore: 0,
+            xiuScore: 0
         };
     }
 
-    // Cập nhật sau khi có kết quả
-    update(hist, actual, lastSignals, lastPatternId) {
-        if (lastSignals && lastSignals.length) this.bma.update(lastSignals, actual);
-        if (lastPatternId) {
-            const pat = lastSignals.find(s => s.pattern_id === lastPatternId);
-            if (pat) this.learner.update(lastPatternId, pat.pattern_pred === actual);
-        }
+    const seq    = history.map(h => h.result);        // mới nhất đứng đầu
+    const seqOld = [...seq].reverse();                // cũ nhất đứng đầu
+    const votes  = [];
+
+    // 1. Các mẫu cầu
+    for (const p of PATTERNS) {
+        const m = matchPattern(seq, p.lens);
+        if (m) votes.push({ pred: m.pred, weight: p.weight, name: `Cầu ${p.name}` });
     }
+
+    // 2. Bệt / bẻ bệt
+    const bet = detectBet(seq);
+    if (bet.pred) votes.push({ pred: bet.pred, weight: bet.weight, name: bet.name });
+
+    // 3. Markov 1 & 2
+    const m1 = markov(seqOld, 1); if (m1) votes.push(m1);
+    const m2 = markov(seqOld, 2); if (m2) votes.push(m2);
+
+    // 4. Lặp block
+    const br = blockRepeat(seqOld); if (br) votes.push(br);
+
+    // 5. Lặp chu kì
+    const cy = cycleDetect(seqOld); if (cy) votes.push(cy);
+
+    // 6. Entropy
+    const h = entropy(seqOld.slice(-30));
+    if (h > 0.92) {
+        votes.push({ pred: "Xỉu", weight: 55, name: `Entropy cao ${h.toFixed(2)} → ưu tiên Xỉu` });
+    } else if (h < 0.7) {
+        const last15 = seqOld.slice(-15);
+        const pT = last15.filter(x => x === "Tài").length / last15.length;
+        const pred = pT > 0.5 ? "Tài" : "Xỉu";
+        votes.push({ pred, weight: 58, name: `Entropy thấp ${h.toFixed(2)} → theo xu hướng` });
+    }
+
+    // Cộng điểm vote
+    let taiScore = 0, xiuScore = 0;
+    for (const v of votes) {
+        if (v.pred === "Tài") taiScore += v.weight;
+        else xiuScore += v.weight;
+    }
+
+    if (taiScore === 0 && xiuScore === 0) {
+        return {
+            prediction: "Xỉu",
+            confidence: 55,
+            reason: "Không nhận diện được cầu, ưu tiên Xỉu",
+            votes: [],
+            streak: bet.streak,
+            entropy: h,
+            taiScore: 0,
+            xiuScore: 0
+        };
+    }
+
+    const total = taiScore + xiuScore;
+    let finalPred, finalConf;
+    if (taiScore > xiuScore) {
+        finalPred = "Tài";
+        finalConf = Math.round((taiScore / total) * 100);
+    } else {
+        finalPred = "Xỉu";
+        finalConf = Math.round((xiuScore / total) * 100);
+    }
+
+    const sortedVotes = votes.slice().sort((a, b) => b.weight - a.weight);
+
+    return {
+        prediction: finalPred,
+        confidence: Math.min(95, Math.max(55, finalConf)),
+        reason: sortedVotes[0]?.name || "Tổng hợp",
+        votes: sortedVotes.slice(0, 6),
+        streak: bet.streak,
+        entropy: h,
+        taiScore,
+        xiuScore
+    };
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  GLOBAL STATE
-// ═══════════════════════════════════════════════════════════════════
-const engine = new Engine();
-let history = [];       // mới nhất ở index 0
-let lastEval = null;    // { session, pred, actual, win, signals, patternId }
-let stats = { wins: 0, total: 0, streak: 0 };
+// ==================== PARSE DỮ LIỆU ====================
+function parseLinesHu(data) {
+    if (!data || !Array.isArray(data.list)) return [];
+    const sortedList = data.list.sort((a, b) => b.id - a.id);
+    return sortedList.map(item => ({
+        session: item.id,
+        dice: item.dices,
+        total: item.point,
+        result: item.point >= 11 ? "Tài" : "Xỉu",
+        result_vn: item.point >= 11 ? "Tài" : "Xỉu",
+        timestamp: Date.now()
+    })).sort((a, b) => a.session - b.session);
+}
 
-// ═══════════════════════════════════════════════════════════════════
-//  FETCH SESSIONS
-// ═══════════════════════════════════════════════════════════════════
-async function fetchSessions(url) {
+function parseLinesMd5(data) {
+    if (!data || !Array.isArray(data.list)) return [];
+    const sortedList = data.list.sort((a, b) => b.id - a.id);
+    return sortedList.map(item => ({
+        session: item.id,
+        dice: item.dices,
+        total: item.point,
+        result: item.resultTruyenThong === "Tài" ? "Tài" : "Xỉu",
+        result_vn: item.resultTruyenThong,
+        timestamp: Date.now()
+    })).sort((a, b) => a.session - b.session);
+}
+
+// ==================== GLOBAL STATE ====================
+let huHistory = [];
+let md5History = [];
+let currentSessionIdHu = null;
+let currentSessionIdMd5 = null;
+
+// ==================== FETCH DATA ====================
+async function fetchHuData() {
     try {
-        const r = await fetch(url, { timeout: 15000 });
-        const data = await r.json();
-        const raw = data.list || data;
-        if (!Array.isArray(raw)) return [];
-        const out = [];
-        for (const it of raw) {
-            try {
-                const point = Number(it.point ?? it.Tong ?? 0);
-                const result = norm(it.resultTruyenThong ?? it.ket_qua, point);
-                out.push({
-                    session: Number(it.id ?? it.phien ?? 0),
-                    dice: it.dices || it.xuc_xac || [0, 0, 0],
-                    total: point,
-                    result,
-                });
-            } catch { continue; }
+        const response = await fetch(API_URL_HU);
+        const data = await response.json();
+        const newHistory = parseLinesHu(data);
+        if (newHistory.length === 0) return;
+
+        const lastSession = newHistory.at(-1);
+
+        if (!currentSessionIdHu) {
+            huHistory = newHistory;
+            currentSessionIdHu = lastSession.session;
+            console.log(`✅ [HŨ] Đã tải ${newHistory.length} phiên`);
         }
-        out.sort((a, b) => b.session - a.session);
-        return out;
+        else if (lastSession.session > currentSessionIdHu) {
+            const newRecords = newHistory.filter(r => r.session > currentSessionIdHu);
+            for (const record of newRecords) huHistory.unshift(record);
+            if (huHistory.length > 500) huHistory = huHistory.slice(0, 450);
+            currentSessionIdHu = lastSession.session;
+            if (newRecords.length > 0) console.log(`🆕 [HŨ] +${newRecords.length} phiên mới`);
+        }
     } catch (e) {
-        return [];
+        console.error(`❌ [HŨ] Lỗi:`, e.message);
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-//  UPDATE HISTORY + LEARN
-// ═══════════════════════════════════════════════════════════════════
-function updateHistory(newSessions) {
-    if (!newSessions.length) return;
-    if (!history.length) {
-        history = newSessions.slice(0, MAX_HIST);
-        return;
-    }
-    const known = new Set(history.map(h => h.session));
-    const fresh = newSessions.filter(s => !known.has(s.session) && s.session > history[0].session);
-    if (!fresh.length) return;
+async function fetchMd5Data() {
+    try {
+        const response = await fetch(API_URL_MD5);
+        const data = await response.json();
+        const newHistory = parseLinesMd5(data);
+        if (newHistory.length === 0) return;
 
-    // Đánh giá prediction cũ nếu có
-    if (lastEval && lastEval.session === history[0].session) {
-        const actual = history[0].result;
-        const win = actual === lastEval.pred;
-        lastEval.actual = actual;
-        lastEval.win = win;
-        stats.total++;
-        if (win) { stats.wins++; stats.streak++; } else stats.streak = 0;
-        engine.update(history, actual, lastEval.signals, lastEval.patternId);
-    }
+        const lastSession = newHistory.at(-1);
 
-    fresh.sort((a, b) => b.session - a.session);
-    history = [...fresh, ...history].slice(0, MAX_HIST);
+        if (!currentSessionIdMd5) {
+            md5History = newHistory;
+            currentSessionIdMd5 = lastSession.session;
+            console.log(`✅ [MD5] Đã tải ${newHistory.length} phiên`);
+        }
+        else if (lastSession.session > currentSessionIdMd5) {
+            const newRecords = newHistory.filter(r => r.session > currentSessionIdMd5);
+            for (const record of newRecords) md5History.unshift(record);
+            if (md5History.length > 500) md5History = md5History.slice(0, 450);
+            currentSessionIdMd5 = lastSession.session;
+            if (newRecords.length > 0) console.log(`🆕 [MD5] +${newRecords.length} phiên mới`);
+        }
+    } catch (e) {
+        console.error(`❌ [MD5] Lỗi:`, e.message);
+    }
 }
 
-    // ═══════════════════════════════════════════════════════════════════
-//  FASTIFY SERVER + FULL API ENDPOINTS
-// ═══════════════════════════════════════════════════════════════════
+// ==================== MIDDLEWARE KIỂM TRA KEY ====================
+function checkKey(query) {
+    const userKey = query.key;
+    if (!userKey) return { valid: false, error: "sai key rồi mua key ib @ADMNLc79" };
+    if (userKey !== VALID_KEY) return { valid: false, error: "sai key rồi mua key ib @ADMNLc79" };
+    return { valid: true };
+}
+
+// ==================== FORMAT RESPONSE ====================
+function buildResponse(gameName, history) {
+    const lastResult = history[0];
+    const prediction = predictCombo(history);
+
+    const last5 = history.slice(0, 5).map((v, i) => ({
+        stt: i + 1,
+        ket_qua: v.result_vn.toLowerCase(),
+        tong: v.total,
+        xuc_xac: `${v.dice[0]}-${v.dice[1]}-${v.dice[2]}`
+    }));
+
+    return {
+        "Id": ADMIN_ID,
+        "Game": gameName,
+        "Phien_truoc": lastResult.session,
+        "Xuc_xac": `${lastResult.dice[0]} - ${lastResult.dice[1]} - ${lastResult.dice[2]}`,
+        "Ket_qua": lastResult.result_vn.toLowerCase(),
+        "Phien_nay": lastResult.session + 1,
+        "Du_doan": prediction.prediction.toLowerCase(),
+        "Ty_le": `${prediction.confidence}%`,
+        "Ly_do": prediction.reason,
+        "Biet": `${prediction.streak} ván`,
+        "Entropy": prediction.entropy.toFixed(3),
+        "Cac_cau_phat_hien": prediction.votes.map(v => ({
+            ten: v.name,
+            du_doan: v.pred.toLowerCase(),
+            diem: v.weight
+        })),
+        "5_van_gan_nhat": last5
+    };
+}
+
+// ==================== FASTIFY SERVER ====================
 const app = fastify({ logger: false });
 await app.register(cors, { origin: "*" });
 
-// ─── Helper: fetch + merge 2 nguồn ────────────────────────────────
-async function refreshHistory() {
-    const [hu, md5] = await Promise.all([
-        fetchSessions(API_HU),
-        fetchSessions(API_MD5),
-    ]);
-    const merged = new Map();
-    for (const s of [...hu, ...md5]) {
-        if (!merged.has(s.session) || merged.get(s.session).total === 0) {
-            merged.set(s.session, s);
-        }
-    }
-    const all = Array.from(merged.values()).sort((a, b) => b.session - a.session);
-    updateHistory(all);
-    return all;
-}
+// Route gốc
+app.get("/", async () => {
+    return {
+        status: "active",
+        message: "API Tài Xỉu HŨ + MD5 - mua key ib @ADMNLc79",
+        algorithm: "🎲 TÀI XỈU VIP - PHÂN TÍCH ĐA THUẬT TOÁN 🎲",
+        admin: ADMIN_ID,
+        key: VALID_KEY,
+        features: [
+            "🧠 Markov bậc 1 & bậc 2",
+            "🔁 Lặp block & lặp chu kì",
+            "📊 Entropy nhận diện cầu loạn / cầu bias",
+            "🧩 Cầu: 1-1, 2-2, 2-1-2, 3-1-3, 3-3, 2-3-2, 3-2-3, kép, zigzag",
+            "🔥 Bệt ≥4 theo, bệt ≥9 bẻ",
+            "🎯 Voting hệ thống đa tầng"
+        ]
+    };
+});
 
-// ─── Auth middleware (so sánh KHÔNG phân biệt hoa/thường) ─────────
-function checkKey(req, reply) {
-    const raw = req.query.key || req.headers["x-api-key"] || "";
-    const key = String(raw).trim().toLowerCase();
-    if (key !== VALID_KEY.toLowerCase()) {
-        reply.code(403).send({ ok: false, error: "Invalid key" });
-        return false;
-    }
-    return true;
-}
+// ==================== API CHO BÀN HŨ ====================
+app.get("/api/taixiu/lc79", async (request, reply) => {
+    const keyCheck = checkKey(request.query);
+    if (!keyCheck.valid) return reply.status(401).send({ error: keyCheck.error });
 
-// ═══════════════════════════════════════════════════════════════════
-//  LOGIC DÙNG CHUNG cho mọi alias predict
-// ═══════════════════════════════════════════════════════════════════
-async function handlePredict(req, reply, detailed = false) {
-    await refreshHistory();
-
-    if (history.length < 12) {
-        return reply.send({
-            ok: false,
-            admin: ADMIN,
-            error: "Chưa đủ dữ liệu",
-            history_count: history.length,
+    if (huHistory.length < 3) {
+        return reply.status(503).send({
+            error: "Đang phân tích dữ liệu HŨ, vui lòng chờ...",
+            need: "Cần ít nhất 3 phiên"
         });
     }
 
-    const result = engine.predict(history);
-    const prev = history[0];
-    const nextSession = prev.session + 1;
-
-    lastEval = {
-        session: prev.session,
-        pred: result.pred,
-        signals: result.signals,
-        patternId: result.pattern?.id || null,
-    };
-
-    const baseResponse = {
-        ok: true,
-        admin: ADMIN,
-        phien_truoc: `#${prev.session}`,
-        xuc_xac: `${prev.dice[0]}-${prev.dice[1]}-${prev.dice[2]}`,
-        ket_qua: prev.result,
-        bieu_do_cau: chart(history),
-        phien_hien_tai: `#${nextSession}`,
-        du_doan: result.pred,
-        ty_le: `${result.conf.toFixed(1)}%`,
-    };
-
-    if (!detailed) return reply.send(baseResponse);
-
-    // Chi tiết signals
-    const bmaW = engine.bma.weights();
-    const enrichedSignals = result.signals.map(s => ({
-        id: s.id,
-        name: s.name,
-        du_doan: s.p_tai >= 50 ? "Tài" : "Xỉu",
-        p_tai: Number(s.p_tai.toFixed(2)),
-        w_heuristic: Number(s.w.toFixed(3)),
-        w_bma: Number((bmaW[s.id] ?? 0).toFixed(4)),
-        w_eff: Number((s.w * (bmaW[s.id] ?? 1 / result.signals.length)).toFixed(4)),
-        src: s.src,
-        pattern_id: s.pattern_id || null,
-        pattern_pred: s.pattern_pred || null,
-    })).sort((a, b) => b.w_eff - a.w_eff);
-
-    const agree = enrichedSignals.filter(s => s.du_doan === result.pred).length;
-
-    return reply.send({
-        ...baseResponse,
-        chi_tiet: {
-            p_tai: Number(result.pTai.toFixed(2)),
-            p_xiu: Number(result.pXiu.toFixed(2)),
-            entropy: Number((result.entropy ?? 0).toFixed(4)),
-            so_module: result.signals.length,
-            so_dong_thuan: agree,
-            ty_le_dong_thuan: Number((agree / result.signals.length * 100).toFixed(1)),
-            cau_hien_tai: result.pattern ? {
-                id: result.pattern.id,
-                ten: result.pattern.name,
-                du_doan: result.pattern.pred,
-                do_tin_cay: result.pattern.conf,
-                mo_ta: result.pattern.src,
-            } : null,
-            signals: enrichedSignals,
-        },
-    });
-}
-
-// ═══════════════════════════════════════════════════════════════════
-//  GET /  — Health check
-// ═══════════════════════════════════════════════════════════════════
-app.get("/", async (req, reply) => {
-    return reply.type("text/plain").send(
-        `🤖 LC79 ENGINE — CTW + BMA + Kalman + HMM + PatternLearner\n` +
-        `📊 History: ${history.length} phiên\n` +
-        `🎯 Tỷ lệ: ${stats.total ? (stats.wins / stats.total * 100).toFixed(1) : 0}% (${stats.wins}/${stats.total})\n` +
-        `👑 Admin: ${ADMIN}\n` +
-        `📡 Endpoints:\n` +
-        `   /api/taixiumd5/lc79?key=...  → Dự đoán (MAIN)\n` +
-        `   /api/taixiumd5/lc79/detail   → Dự đoán + signals\n` +
-        `   /predict?key=...             → alias\n` +
-        `   /predict/detail?key=...      → alias detail\n` +
-        `   /history?key=...             → Lịch sử\n` +
-        `   /history/chart?key=...       → Biểu đồ cầu\n` +
-        `   /stats?key=...               → Thống kê BMA\n` +
-        `   /sessions?key=...            → Raw sessions\n`
-    );
+    return buildResponse("HŨ", huHistory);
 });
 
-// ═══════════════════════════════════════════════════════════════════
-//  ✅ MAIN ENDPOINT mà bot đang gọi:
-//     GET /api/taixiumd5/lc79?key=...
-// ═══════════════════════════════════════════════════════════════════
-app.get("/api/taixiumd5/lc79", async (req, reply) => {
-    if (!checkKey(req, reply)) return;
-    return handlePredict(req, reply, false);
-});
-
-app.get("/api/taixiumd5/lc79/detail", async (req, reply) => {
-    if (!checkKey(req, reply)) return;
-    return handlePredict(req, reply, true);
-});
-
-// ═══════════════════════════════════════════════════════════════════
-//  Alias /predict (giữ để tương thích)
-// ═══════════════════════════════════════════════════════════════════
-app.get("/predict", async (req, reply) => {
-    if (!checkKey(req, reply)) return;
-    return handlePredict(req, reply, false);
-});
-
-app.get("/predict/detail", async (req, reply) => {
-    if (!checkKey(req, reply)) return;
-    return handlePredict(req, reply, true);
-});
-
-// ═══════════════════════════════════════════════════════════════════
-//  GET /history
-// ═══════════════════════════════════════════════════════════════════
-app.get("/history", async (req, reply) => {
-    if (!checkKey(req, reply)) return;
-    await refreshHistory();
-
-    const limit = Math.min(Number(req.query.limit) || 50, 500);
-    const items = history.slice(0, limit).map(h => ({
-        phien: h.session,
-        xuc_xac: `${h.dice[0]}-${h.dice[1]}-${h.dice[2]}`,
-        tong: h.total,
-        ket_qua: h.result,
-    }));
-
-    return reply.send({
-        ok: true,
-        admin: ADMIN,
-        tong_phien: history.length,
-        hien_thi: items.length,
-        items,
-    });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-//  GET /history/chart
-// ═══════════════════════════════════════════════════════════════════
-app.get("/history/chart", async (req, reply) => {
-    if (!checkKey(req, reply)) return;
-    await refreshHistory();
-
-    const n = Math.min(Number(req.query.n) || N_CHART, 200);
-    const slice = history.slice(0, n);
-    const ch = slice.slice().reverse().map(x => toC(x.result)).join("");
-    const st = streaks(history);
-    const cur = st[0] || { type: "-", len: 0 };
-
-    return reply.send({
-        ok: true,
-        admin: ADMIN,
-        so_phien: slice.length,
-        bieu_do: ch,
-        chuoi_hien_tai: { ket_qua: cur.type, do_dai: cur.len },
-        thong_ke: {
-            tai: slice.filter(x => x.result === "Tài").length,
-            xiu: slice.filter(x => x.result === "Xỉu").length,
-        },
-    });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-//  GET /sessions
-// ═══════════════════════════════════════════════════════════════════
-app.get("/sessions", async (req, reply) => {
-    if (!checkKey(req, reply)) return;
-    await refreshHistory();
-
-    const limit = Math.min(Number(req.query.limit) || 30, 200);
-    return reply.send({
-        ok: true,
-        admin: ADMIN,
-        count: history.length,
-        sessions: history.slice(0, limit),
-    });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-//  GET /stats
-// ═══════════════════════════════════════════════════════════════════
-app.get("/stats", async (req, reply) => {
-    if (!checkKey(req, reply)) return;
-
-    const bmaW = engine.bma.weights();
-    const topSignals = Object.entries(bmaW)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 20)
-        .map(([id, w]) => ({
-            id,
-            weight: Number(w.toFixed(4)),
-            hits: engine.bma.hits[id] || 0,
-            total: engine.bma.totals[id] || 0,
-            acc: engine.bma.totals[id]
-                ? Number(((engine.bma.hits[id] || 0) / engine.bma.totals[id] * 100).toFixed(1))
-                : 0,
+// API lịch sử HŨ
+app.get("/api/taixiu/lc79/history", async (request, reply) => {
+    const keyCheck = checkKey(request.query);
+    if (!keyCheck.valid) return reply.status(401).send({ error: keyCheck.error });
+    return [...huHistory]
+        .sort((a, b) => b.session - a.session)
+        .slice(0, 30)
+        .map(i => ({
+            session: i.session,
+            dice: i.dice,
+            total: i.total,
+            result: i.result_vn.toLowerCase()
         }));
-
-    const patterns = Object.entries(engine.learner.stats).map(([id, s]) => ({
-        id,
-        hits: s.hits,
-        total: s.total,
-        acc: s.total ? Number((s.hits / s.total * 100).toFixed(1)) : 0,
-        streak: s.streak,
-        weight: Number(engine.learner.weight(id).toFixed(2)),
-    })).sort((a, b) => b.acc - a.acc);
-
-    return reply.send({
-        ok: true,
-        admin: ADMIN,
-        history: history.length,
-        bot: {
-            wins: stats.wins,
-            total: stats.total,
-            rate: stats.total ? Number((stats.wins / stats.total * 100).toFixed(1)) : 0,
-            streak: stats.streak,
-            wilson_lb: Number((wilsonLB(stats.wins, stats.total) * 100).toFixed(1)),
-        },
-        bma_top: topSignals,
-        patterns,
-    });
 });
 
-// ═══════════════════════════════════════════════════════════════════
-//  GET /reset
-// ═══════════════════════════════════════════════════════════════════
-app.get("/reset", async (req, reply) => {
-    if (!checkKey(req, reply)) return;
-    if (req.query.confirm !== "yes") {
-        return reply.send({ ok: false, error: "Cần ?confirm=yes" });
+// ==================== API CHO BÀN MD5 ====================
+app.get("/api/taixiumd5/lc79", async (request, reply) => {
+    const keyCheck = checkKey(request.query);
+    if (!keyCheck.valid) return reply.status(401).send({ error: keyCheck.error });
+
+    if (md5History.length < 3) {
+        return reply.status(503).send({
+            error: "Đang phân tích dữ liệu MD5, vui lòng chờ...",
+            need: "Cần ít nhất 3 phiên"
+        });
     }
-    history = [];
-    lastEval = null;
-    stats = { wins: 0, total: 0, streak: 0 };
-    engine.bma = new BMA(0.97);
-    engine.kalman = new Kalman1D(0.02, 0.15);
-    engine.learner = new PatternLearner();
-    return reply.send({ ok: true, admin: ADMIN, msg: "Đã reset toàn bộ engine + history" });
+
+    return buildResponse("MD5", md5History);
 });
 
-// ═══════════════════════════════════════════════════════════════════
-//  LISTEN
-// ═══════════════════════════════════════════════════════════════════
-app.listen({ port: PORT, host: "0.0.0.0" }, (err, addr) => {
-    if (err) { console.error(err); process.exit(1); }
-    console.log(`🚀 LC79 Engine @ ${addr}`);
-    console.log(`👑 Admin: ${ADMIN}`);
-    console.log(`🔑 Key:   ${VALID_KEY}`);
-    console.log(`📡 MAIN endpoint:`);
-    console.log(`   GET /api/taixiumd5/lc79?key=...`);
+// API lịch sử MD5
+app.get("/api/taixiumd5/lc79/history", async (request, reply) => {
+    const keyCheck = checkKey(request.query);
+    if (!keyCheck.valid) return reply.status(401).send({ error: keyCheck.error });
+    return [...md5History]
+        .sort((a, b) => b.session - a.session)
+        .slice(0, 30)
+        .map(i => ({
+            session: i.session,
+            dice: i.dice,
+            total: i.total,
+            result: i.result_vn.toLowerCase()
+        }));
 });
+
+// ==================== API KIỂM TRA KEY ====================
+app.get("/check-key", async (request) => {
+    const userKey = request.query.key;
+    if (!userKey) return { status: "error", message: "sai key rồi mua key ib @ADMNLc79" };
+    if (userKey === VALID_KEY) return { status: "success", message: "KEY HỢP LỆ", key: VALID_KEY, admin: ADMIN_ID };
+    return { status: "error", message: "sai key rồi mua key ib @ADMNLc79" };
+});
+
+// API thống kê
+app.get("/api/stats", async (request, reply) => {
+    const keyCheck = checkKey(request.query);
+    if (!keyCheck.valid) return reply.status(401).send({ error: keyCheck.error });
+
+    const huTai  = huHistory.filter(h => h.result === "Tài").length;
+    const huXiu  = huHistory.length - huTai;
+    const md5Tai = md5History.filter(h => h.result === "Tài").length;
+    const md5Xiu = md5History.length - md5Tai;
+
+    return {
+        hu: {
+            history_length: huHistory.length,
+            last_session: huHistory[0] || null,
+            ti_le: huHistory.length > 0
+                ? `${(huTai / huHistory.length * 100).toFixed(1)}% Tài - ${(huXiu / huHistory.length * 100).toFixed(1)}% Xỉu`
+                : "Chưa có dữ liệu"
+        },
+        md5: {
+            history_length: md5History.length,
+            last_session: md5History[0] || null,
+            ti_le: md5History.length > 0
+                ? `${(md5Tai / md5History.length * 100).toFixed(1)}% Tài - ${(md5Xiu / md5History.length * 100).toFixed(1)}% Xỉu`
+                : "Chưa có dữ liệu"
+        },
+        algorithm: "TÀI XỈU VIP - PHÂN TÍCH ĐA THUẬT TOÁN",
+        admin: ADMIN_ID,
+        key: VALID_KEY
+    };
+});
+
+// ==================== START SERVER ====================
+const start = async () => {
+    await Promise.all([fetchHuData(), fetchMd5Data()]);
+
+    setInterval(fetchHuData, 5000);
+    setInterval(fetchMd5Data, 5000);
+
+    try {
+        await app.listen({ port: PORT, host: "0.0.0.0" });
+    } catch (err) {
+        console.error("❌ Lỗi khởi động server:", err.message);
+        process.exit(1);
+    }
+
+    console.log("\n╔══════════════════════════════════════════════════════════════════════════════╗");
+    console.log("║     TÀI XỈU HŨ & MD5 - PHÂN TÍCH ĐA THUẬT TOÁN (VOTING)                     ║");
+    console.log("╠══════════════════════════════════════════════════════════════════════════════╣");
+    console.log("║  🚀 Server running on port", PORT);
+    console.log("║  🔑 KEY   :", VALID_KEY);
+    console.log("║  👤 ADMIN :", ADMIN_ID);
+    console.log("║                                                                              ║");
+    console.log("║  🧩 MẪU CẦU:                                                                  ║");
+    console.log("║     1-1, 2-2, 2-1-2, 3-1-3, 3-3, 2-3-2, 3-2-3, Kép 4, ZigZag               ║");
+    console.log("║                                                                              ║");
+    console.log("║  🧠 THUẬT TOÁN:                                                              ║");
+    console.log("║     Markov 1, Markov 2, Lặp block, Lặp chu kì, Entropy                     ║");
+    console.log("║     Bệt ≥4 → theo, Bệt ≥9 → bẻ                                              ║");
+    console.log("║                                                                              ║");
+    console.log("║  🎯 ENDPOINTS:                                                               ║");
+    console.log("║     HŨ :  /api/taixiu/lc79?key=" + VALID_KEY + "                            ║");
+    console.log("║     MD5:  /api/taixiumd5/lc79?key=" + VALID_KEY + "                         ║");
+    console.log("║                                                                              ║");
+    console.log("║  📞 ADMIN:", ADMIN_ID);
+    console.log("╚══════════════════════════════════════════════════════════════════════════════╝\n");
+};
+
+start();
