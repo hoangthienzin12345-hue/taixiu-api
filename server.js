@@ -736,35 +736,9 @@ function buildResp(state, game) {
         Du_doan: ai.predict === "TAI" ? "tài" : "xỉu",
         Do_tin_cay: `${ai.confidence.toFixed(1)}%`,
         Ly_do: `Tier ${ai.tier} · Wilson ${ai.wilson.toFixed(1)}% · Agreement ${ai.agreement.toFixed(0)}%`,
-        Biet_hien_tai: `${ai.streak} ${ai.last}`,
-        Nguon_cau: `BMA(${ai.signals.length}) · ${topSignals}`,
-        AI: {
-            tier: ai.tier,
-            p_tai: +ai.p_tai.toFixed(2),
-            p_xiu: +ai.p_xiu.toFixed(2),
-            wilson: +ai.wilson.toFixed(2),
-            agreement: +ai.agreement.toFixed(1),
-            entropy: +ai.entropy.toFixed(3),
-            cp_prob: +ai.cp_prob.toFixed(3),
-            run_len: ai.run_len,
-            f10: +ai.f10.toFixed(1),
-            f20: +ai.f20.toFixed(1),
-            f50: +ai.f50.toFixed(1),
-            streak: ai.streak,
-            pattern_ctx: ai.pattern_ctx,
-            pattern_n: ai.pattern_n,
-            signals: ai.signals.map(s => ({
-                name: s.name,
-                p_tai: +s.p_tai.toFixed(1),
-                w: +s.w.toFixed(2),
-                meta: +s.meta.toFixed(2),
-                note: s.note,
+
             })),
         },
-        "5_van_gan_nhat": last5,
-    };
-}
-
 // ═══════════════════════════════════════════════════════════════════
 //  CHECK KEY
 // ═══════════════════════════════════════════════════════════════════
