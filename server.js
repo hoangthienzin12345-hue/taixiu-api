@@ -8,41 +8,37 @@ const ADMIN     = "@ADMNLc79";
 const API_URL_HU  = "https://wtx.tele68.com/v1/tx/lite-sessions?cp=R&cl=R&pf=web&at=83991213bfd4c554dc94bcd98979bdc5";
 const API_URL_MD5 = "https://wtxmd52.tele68.com/v1/txmd5/sessions";
 
-// ═══════════════════════════════════════════════════════════════════
-//  HELPERS
-// ═══════════════════════════════════════════════════════════════════
 const clamp = (v, lo = 0.05, hi = 0.95) => Math.max(lo, Math.min(hi, v));
 const tail  = (a, n) => a.slice(-n);
 
-// ═══════════════════════════════════════════════════════════════════
-//  6 THUẬT TOÁN CẦU — PHÂN TÍCH 15 PHIÊN GẦN NHẤT
-// ═══════════════════════════════════════════════════════════════════
+function streakLen(seq) {
+    if (!seq.length) return [0, ""];
+    const L = seq[seq.length - 1];
+    let s = 1;
+    for (let i = seq.length - 2; i >= 0; i--) { if (seq[i] === L) s++; else break; }
+    return [s, L];
+}
 
-// P1 — ĐẢO THUẬN: chuỗi T-X-T-X-... dài ≥5 → tiếp tục đảo (ngược last)
-const P1 = c => {
+// ═══════════════════════════════════════════════════════════════════
+//  6 PATTERN MATCHER (trên 15 phiên cuối)
+// ═══════════════════════════════════════════════════════════════════
+const P1 = c => { // Đảo thuận
     const w = tail(c.seq, 15);
     if (w.length < 6) return [0.5, 0, "n/a"];
     let alt = 1;
-    for (let i = w.length - 1; i >= 1; i--) {
-        if (w[i] !== w[i - 1]) alt++; else break;
-    }
+    for (let i = w.length - 1; i >= 1; i--) { if (w[i] !== w[i-1]) alt++; else break; }
     if (alt < 5) return [0.5, 0, `alt=${alt}`];
     const last = w[w.length - 1];
-    return [last === "T" ? 0.42 : 0.58, Math.min(2, (alt - 3) * 0.55), `đảo×${alt}`];
+    return [last === "T" ? 0.42 : 0.58, Math.min(2, (alt-3)*0.55), `đảo×${alt}`];
 };
-
-// P2 — CẦU 1-1: 8 phiên cuối là TXTXTXTX (đảo đều hoàn hảo)
-const P2 = c => {
+const P2 = c => { // 1-1
     const w = tail(c.seq, 15);
     if (w.length < 8) return [0.5, 0, "n/a"];
-    const last8 = w.slice(-8);
-    for (let i = 1; i < 8; i++) if (last8[i] === last8[i - 1]) return [0.5, 0, "n/a"];
-    const last = last8[7];
-    return [last === "T" ? 0.42 : 0.58, 1.6, "1-1×8"];
+    const l8 = w.slice(-8);
+    for (let i = 1; i < 8; i++) if (l8[i] === l8[i-1]) return [0.5, 0, "n/a"];
+    return [l8[7] === "T" ? 0.42 : 0.58, 1.6, "1-1×8"];
 };
-
-// P3 — CẦU 2-2: TTXXTTXX (→T) hoặc XXTTXXTT (→X)
-const P3 = c => {
+const P3 = c => { // 2-2
     const w = tail(c.seq, 15);
     if (w.length < 8) return [0.5, 0, "n/a"];
     const p8 = w.slice(-8).join("");
@@ -53,9 +49,7 @@ const P3 = c => {
     if (p4 === "XXTT") return [0.42, 1.0, "2-2×2→X"];
     return [0.5, 0, "n/a"];
 };
-
-// P4 — CẦU 3-1: TTTXTTTX (→T) hoặc XXXTXXXT (→X)
-const P4 = c => {
+const P4 = c => { // 3-1
     const w = tail(c.seq, 15);
     if (w.length < 8) return [0.5, 0, "n/a"];
     const p8 = w.slice(-8).join("");
@@ -66,40 +60,32 @@ const P4 = c => {
     if (p4 === "XXXT") return [0.58, 1.0, "3-1 bẻ→T"];
     return [0.5, 0, "n/a"];
 };
-
-// P5 — CẦU 2-1: TTXTTX (→T) hoặc XXTXXT (→X)
-const P5 = c => {
+const P5 = c => { // 2-1
     const w = tail(c.seq, 15);
     if (w.length < 6) return [0.5, 0, "n/a"];
     const p6 = w.slice(-6).join("");
     if (p6 === "TTXTTX") return [0.58, 1.3, "2-1×2→T"];
     if (p6 === "XXTXXT") return [0.42, 1.3, "2-1×2→X"];
     const p3 = w.slice(-3).join("");
-    if (p3 === "TTX") return [0.58, 0.9, "2-1×1→T"];
-    if (p3 === "XXT") return [0.42, 0.9, "2-1×1→X"];
+    if (p3 === "TTX") return [0.58, 0.9, "2-1→T"];
+    if (p3 === "XXT") return [0.42, 0.9, "2-1→X"];
     return [0.5, 0, "n/a"];
 };
-
-// P6 — CẦU 3-3: TTTXXX (→T) hoặc XXXTTT (→X)
-const P6 = c => {
+const P6 = c => { // 3-3
     const w = tail(c.seq, 15);
     if (w.length < 6) return [0.5, 0, "n/a"];
     const p12 = w.slice(-12).join("");
     if (p12 === "TTTXXXTTTXXX") return [0.58, 1.8, "3-3×2→T"];
     if (p12 === "XXXTTTXXXTTT") return [0.42, 1.8, "3-3×2→X"];
     const p6 = w.slice(-6).join("");
-    if (p6 === "TTTXXX") return [0.58, 1.4, "3-3×1→T"];
-    if (p6 === "XXXTTT") return [0.42, 1.4, "3-3×1→X"];
+    if (p6 === "TTTXXX") return [0.58, 1.4, "3-3→T"];
+    if (p6 === "XXXTTT") return [0.42, 1.4, "3-3→X"];
     return [0.5, 0, "n/a"];
 };
 
 const MODULES = [
-    ["P1_ĐảoThuận", P1],
-    ["P2_Cầu1-1",   P2],
-    ["P3_Cầu2-2",   P3],
-    ["P4_Cầu3-1",   P4],
-    ["P5_Cầu2-1",   P5],
-    ["P6_Cầu3-3",   P6],
+    ["P1", P1], ["P2", P2], ["P3", P3],
+    ["P4", P4], ["P5", P5], ["P6", P6],
 ];
 
 // ═══════════════════════════════════════════════════════════════════
@@ -123,7 +109,7 @@ async function fetchJSON(url, timeoutMs = 8000, retries = 2) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  ANALYZE — chạy 6 module cầu
+//  ANALYZE — 6 patterns + Fallback Đảo Bệt
 // ═══════════════════════════════════════════════════════════════════
 function analyze(state) {
     const sessions = state.sessions;
@@ -136,72 +122,66 @@ function analyze(state) {
         try {
             const [p, w, note] = fn(ctx);
             signals.push({ id, p_tai: clamp(p, 0.05, 0.95) * 100, w, note });
-        } catch (e) {
-            signals.push({ id, p_tai: 50, w: 0, note: "err" });
-        }
+        } catch { signals.push({ id, p_tai: 50, w: 0, note: "err" }); }
     }
 
-    // Ensemble có trọng số — CHỈ tính các pattern có match (w > 0)
     const matched = signals.filter(s => s.w > 0);
+    const [streak, last] = streakLen(seq);
 
-    let pTai = 0.5, verdict = "NEUTRAL", matchedNames = [];
-    if (matched.length === 0) {
-        // Không pattern nào match → dựa vào phiên cuối đảo nhẹ (fallback 50/50)
-        verdict = "NO_PATTERN";
-    } else {
+    let pTai, tier, note, matchNames;
+
+    if (matched.length > 0) {
+        // ── Có pattern match → ensemble có trọng số
         let num = 0, den = 0;
         for (const s of matched) { num += s.p_tai * s.w; den += s.w; }
         pTai = den ? num / den / 100 : 0.5;
-        verdict = "MATCHED";
-        matchedNames = matched.map(s => s.id);
+        const predict = pTai >= 0.5 ? "TAI" : "XIU";
+        const agree = matched.filter(s => (s.p_tai >= 50) === (predict === "TAI")).length / matched.length * 100;
+        const conf = Math.max(pTai, 1 - pTai) * 100;
+        if (conf >= 57 && agree >= 65)      tier = "STRONG";
+        else if (conf >= 53 && agree >= 55) tier = "OK";
+        else if (matched.length === 1)      tier = "SINGLE";
+        else                                tier = "SPLIT";
+        note = `${matched.map(s => s.note).join(" + ")}`;
+        matchNames = matched.map(s => s.id).join(",");
+    } else if (streak >= 4) {
+        // ── FIX: bệt dài không pattern → ĐẢO BỆT
+        // streak càng dài càng chắc đảo
+        const pRev = last === "T" ? 0.35 : 0.65;
+        pTai = pRev;
+        tier = streak >= 7 ? "STRONG" : streak >= 5 ? "OK" : "SINGLE";
+        note = `Đảo bệt ${last}×${streak}`;
+        matchNames = "REVERSAL";
+    } else {
+        // ── Không match, không streak → NEUTRAL
+        pTai = 0.5;
+        tier = "NO_PATTERN";
+        note = "Không có pattern";
+        matchNames = "none";
     }
 
     const predict = pTai >= 0.5 ? "TAI" : "XIU";
-    const conf = Math.max(pTai, 1 - pTai) * 100;
+    const conf    = Math.max(pTai, 1 - pTai) * 100;
 
-    // Agreement trên các pattern match
-    const agree = matched.length
-        ? matched.filter(s => (s.p_tai >= 50) === (predict === "TAI")).length / matched.length * 100
-        : 0;
-
-    // Tier
-    let tier = "WEAK";
-    if (matched.length === 0) tier = "NO_PATTERN";
-    else if (matched.length === 1) tier = "SINGLE";
-    else if (conf >= 57 && agree >= 65) tier = "STRONG";
-    else if (conf >= 53 && agree >= 55) tier = "OK";
-    else if (agree < 40) tier = "SPLIT";
-
-    // Wilson từ lịch sử thắng
+    // Wilson
     const h = state.history.slice(-100);
     let wilson = 0;
     if (h.length >= 20) {
         const wins = h.filter(x => x.result === "WIN").length;
-        const ph = wins / h.length, z = 1.96, d = 1 + z * z / h.length;
-        const ctr = (ph + z * z / (2 * h.length)) / d;
-        const mg = z * Math.sqrt(ph * (1 - ph) / h.length + z * z / (4 * h.length * h.length)) / d;
+        const ph = wins / h.length, z = 1.96, d = 1 + z*z/h.length;
+        const ctr = (ph + z*z/(2*h.length)) / d;
+        const mg  = z * Math.sqrt(ph*(1-ph)/h.length + z*z/(4*h.length*h.length)) / d;
         wilson = Math.max(0, ctr - mg) * 100;
     }
 
-    const [streak, last] = streakLen(seq);
-    const last15 = seq.slice(-15);
-
     return {
-        predict, confidence: conf, tier, agreement: agree, wilson,
+        predict, confidence: conf, tier,
         p_tai: pTai * 100, p_xiu: (1 - pTai) * 100,
-        streak, last, last15: last15.join(""),
-        matchedCount: matched.length,
-        matchedNames: matchedNames.join(","),
+        wilson, streak, last,
+        last15: seq.slice(-15).join(""),
+        matchNames, note,
         signals,
     };
-}
-
-function streakLen(seq) {
-    if (!seq.length) return [0, ""];
-    const L = seq[seq.length - 1];
-    let s = 1;
-    for (let i = seq.length - 2; i >= 0; i--) { if (seq[i] === L) s++; else break; }
-    return [s, L];
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -266,42 +246,31 @@ function getPrediction(state) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  BUILD RESPONSE
+//  BUILD RESPONSE — GỌN
 // ═══════════════════════════════════════════════════════════════════
 function buildResp(state, game) {
     if (state.sessions.length < 15) return null;
     const ai = getPrediction(state);
     if (!ai) return null;
     const last = state.sessions[state.sessions.length - 1];
-    const topSig = ai.signals.slice().sort((a, b) => b.w - a.w)
-        .map(s => `${s.id}:${s.p_tai.toFixed(0)}%×${s.w.toFixed(1)}`).join(" | ");
 
     return {
-        Id: ADMIN, Game: game,
-        Phien_truoc: last.id,
-        Xuc_xac: `${last.dices[0]} - ${last.dices[1]} - ${last.dices[2]}`,
-        Ket_qua: last.result_vn.toLowerCase(),
-        Tong: last.point,
-        Phien_nay: last.id + 1,
-        Du_doan: ai.predict === "TAI" ? "tài" : "xỉu",
-        Do_tin_cay: `${ai.confidence.toFixed(1)}%`,
-        Ly_do: `Tier ${ai.tier} · Match ${ai.matchedCount}/6 (${ai.matchedNames || "none"}) · Agree ${ai.agreement.toFixed(0)}% · Wilson ${ai.wilson.toFixed(1)}%`,
-        Biet_hien_tai: `${ai.streak} ${ai.last}`,
-        Last15: ai.last15,
-        Nguon_cau: `6 patterns × 15 phiên · ${topSig}`,
-        AI: {
+        id: ADMIN,
+        game,
+        phien: last.id + 1,
+        du_doan: ai.predict === "TAI" ? "tài" : "xỉu",
+        do_tin_cay: `${ai.confidence.toFixed(1)}%`,
+        ly_do: `[${ai.tier}] ${ai.note}`,
+        last15: ai.last15,
+        vua_qua: state.sessions.slice(-5).reverse().map(v => v.point),
+        ai: {
             tier: ai.tier,
-            p_tai: +ai.p_tai.toFixed(2), p_xiu: +ai.p_xiu.toFixed(2),
-            wilson: +ai.wilson.toFixed(2), agreement: +ai.agreement.toFixed(1),
-            matched_count: ai.matchedCount,
-            matched: ai.matchedNames || "none",
-            last15: ai.last15,
-            signals: ai.signals.map(s => ({ id: s.id, p_tai: +s.p_tai.toFixed(1), w: +s.w.toFixed(2), note: s.note })),
+            p_tai: +ai.p_tai.toFixed(1),
+            p_xiu: +ai.p_xiu.toFixed(1),
+            match: ai.matchNames,
+            wilson: +ai.wilson.toFixed(1),
+            streak: `${ai.streak}${ai.last}`,
         },
-        "5_van_gan_nhat": state.sessions.slice(-5).reverse().map((v, i) => ({
-            stt: i + 1, result: v.result_vn, total: v.point,
-            dice: `${v.dices[0]}-${v.dices[1]}-${v.dices[2]}`,
-        })),
     };
 }
 
@@ -314,15 +283,7 @@ app.register(cors, { origin: "*" });
 
 app.get("/", async () => ({
     status: "ok", admin: ADMIN,
-    engine: "LC79 v11 — 6 PATTERNS × 15 PHIÊN",
-    patterns: {
-        P1: "Đảo thuận (T-X-T-X ≥5 nhịp)",
-        P2: "Cầu 1-1 (TXTXTXTX)",
-        P3: "Cầu 2-2 (TTXXTTXX / XXTTXXTT)",
-        P4: "Cầu 3-1 (TTTXTTTX / XXXTXXXT)",
-        P5: "Cầu 2-1 (TTXTTX / XXTXXT)",
-        P6: "Cầu 3-3 (TTTXXX / XXXTTT)",
-    },
+    engine: "LC79 v12 — 6 PATTERNS + ĐẢO BỆT FALLBACK",
     hu:  { loaded: stateHu.sessions.length,  last_id: stateHu.lastId },
     md5: { loaded: stateMd5.sessions.length, last_id: stateMd5.lastId },
 }));
@@ -356,7 +317,7 @@ app.get("/check-key", async req => req.query.key === VALID_KEY
     : { status: "error", message: `Sai key! Ib ${ADMIN}` });
 
 app.listen({ port: PORT, host: "0.0.0.0" }).then(() => {
-    console.log(`🚀 [${PORT}] LC79 v11 · 6 patterns × 15 phiên online`);
+    console.log(`🚀 [${PORT}] LC79 v12 online`);
     setTimeout(() => { fetchHu().catch(() => {}); fetchMd5().catch(() => {}); }, 100);
     setInterval(() => fetchHu().catch(() => {}),  6000);
     setInterval(() => fetchMd5().catch(() => {}), 6000);
