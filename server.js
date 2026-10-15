@@ -757,7 +757,7 @@ function updateHistory(newSessions) {
     history = [...fresh, ...history].slice(0, MAX_HIST);
 }
 
-// ═══════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════
 //  FASTIFY SERVER + FULL API ENDPOINTS
 // ═══════════════════════════════════════════════════════════════════
 const app = fastify({ logger: false });
@@ -780,10 +780,11 @@ async function refreshHistory() {
     return all;
 }
 
-// ─── Auth middleware ──────────────────────────────────────────────
+// ─── Auth middleware (so sánh KHÔNG phân biệt hoa/thường) ─────────
 function checkKey(req, reply) {
-    const key = req.query.key || req.headers["x-api-key"];
-    if (key !== VALID_KEY) {
+    const raw = req.query.key || req.headers["x-api-key"] || "";
+    const key = String(raw).trim().toLowerCase();
+    if (key !== VALID_KEY.toLowerCase()) {
         reply.code(403).send({ ok: false, error: "Invalid key" });
         return false;
     }
@@ -791,31 +792,9 @@ function checkKey(req, reply) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  GET /  — Health check
+//  LOGIC DÙNG CHUNG cho mọi alias predict
 // ═══════════════════════════════════════════════════════════════════
-app.get("/", async (req, reply) => {
-    return reply.type("text/plain").send(
-        `🤖 LC79 ENGINE — CTW + BMA + Kalman + HMM + PatternLearner\n` +
-        `📊 History: ${history.length} phiên\n` +
-        `🎯 Tỷ lệ: ${stats.total ? (stats.wins / stats.total * 100).toFixed(1) : 0}% (${stats.wins}/${stats.total})\n` +
-        `👑 Admin: ${ADMIN}\n` +
-        `📡 Endpoints:\n` +
-        `   /predict?key=...        → Dự đoán phiên tiếp theo\n` +
-        `   /predict/detail?key=... → Dự đoán + chi tiết signals\n` +
-        `   /history?key=...        → Lịch sử phiên (mới nhất trước)\n` +
-        `   /history/chart?key=...  → Biểu đồ cầu N phiên\n` +
-        `   /stats?key=...          → Thống kê BMA + pattern learner\n` +
-        `   /sessions?key=...       → Raw danh sách phiên\n` +
-        `   /reset?key=...          → Reset engine (chỉ admin)\n`
-    );
-});
-
-// ═══════════════════════════════════════════════════════════════════
-//  GET /predict  — Dự đoán gọn
-// ═══════════════════════════════════════════════════════════════════
-app.get("/predict", async (req, reply) => {
-    if (!checkKey(req, reply)) return;
-
+async function handlePredict(req, reply, detailed = false) {
     await refreshHistory();
 
     if (history.length < 12) {
@@ -831,7 +810,6 @@ app.get("/predict", async (req, reply) => {
     const prev = history[0];
     const nextSession = prev.session + 1;
 
-    // Lưu eval để lần sau chấm điểm
     lastEval = {
         session: prev.session,
         pred: result.pred,
@@ -839,7 +817,7 @@ app.get("/predict", async (req, reply) => {
         patternId: result.pattern?.id || null,
     };
 
-    return reply.send({
+    const baseResponse = {
         ok: true,
         admin: ADMIN,
         phien_truoc: `#${prev.session}`,
@@ -849,38 +827,11 @@ app.get("/predict", async (req, reply) => {
         phien_hien_tai: `#${nextSession}`,
         du_doan: result.pred,
         ty_le: `${result.conf.toFixed(1)}%`,
-    });
-});
-
-// ═══════════════════════════════════════════════════════════════════
-//  GET /predict/detail  — Dự đoán + chi tiết signals
-// ═══════════════════════════════════════════════════════════════════
-app.get("/predict/detail", async (req, reply) => {
-    if (!checkKey(req, reply)) return;
-
-    await refreshHistory();
-
-    if (history.length < 12) {
-        return reply.send({
-            ok: false,
-            admin: ADMIN,
-            error: "Chưa đủ dữ liệu",
-            history_count: history.length,
-        });
-    }
-
-    const result = engine.predict(history);
-    const prev = history[0];
-    const nextSession = prev.session + 1;
-
-    lastEval = {
-        session: prev.session,
-        pred: result.pred,
-        signals: result.signals,
-        patternId: result.pattern?.id || null,
     };
 
-    // Sắp xếp signals theo trọng số hiệu dụng
+    if (!detailed) return reply.send(baseResponse);
+
+    // Chi tiết signals
     const bmaW = engine.bma.weights();
     const enrichedSignals = result.signals.map(s => ({
         id: s.id,
@@ -895,19 +846,10 @@ app.get("/predict/detail", async (req, reply) => {
         pattern_pred: s.pattern_pred || null,
     })).sort((a, b) => b.w_eff - a.w_eff);
 
-    // Đếm đồng thuận
     const agree = enrichedSignals.filter(s => s.du_doan === result.pred).length;
 
     return reply.send({
-        ok: true,
-        admin: ADMIN,
-        phien_truoc: `#${prev.session}`,
-        xuc_xac: `${prev.dice[0]}-${prev.dice[1]}-${prev.dice[2]}`,
-        ket_qua: prev.result,
-        bieu_do_cau: chart(history),
-        phien_hien_tai: `#${nextSession}`,
-        du_doan: result.pred,
-        ty_le: `${result.conf.toFixed(1)}%`,
+        ...baseResponse,
         chi_tiet: {
             p_tai: Number(result.pTai.toFixed(2)),
             p_xiu: Number(result.pXiu.toFixed(2)),
@@ -925,14 +867,61 @@ app.get("/predict/detail", async (req, reply) => {
             signals: enrichedSignals,
         },
     });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  GET /  — Health check
+// ═══════════════════════════════════════════════════════════════════
+app.get("/", async (req, reply) => {
+    return reply.type("text/plain").send(
+        `🤖 LC79 ENGINE — CTW + BMA + Kalman + HMM + PatternLearner\n` +
+        `📊 History: ${history.length} phiên\n` +
+        `🎯 Tỷ lệ: ${stats.total ? (stats.wins / stats.total * 100).toFixed(1) : 0}% (${stats.wins}/${stats.total})\n` +
+        `👑 Admin: ${ADMIN}\n` +
+        `📡 Endpoints:\n` +
+        `   /api/taixiumd5/lc79?key=...  → Dự đoán (MAIN)\n` +
+        `   /api/taixiumd5/lc79/detail   → Dự đoán + signals\n` +
+        `   /predict?key=...             → alias\n` +
+        `   /predict/detail?key=...      → alias detail\n` +
+        `   /history?key=...             → Lịch sử\n` +
+        `   /history/chart?key=...       → Biểu đồ cầu\n` +
+        `   /stats?key=...               → Thống kê BMA\n` +
+        `   /sessions?key=...            → Raw sessions\n`
+    );
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  GET /history  — Lịch sử phiên (mới nhất trước)
+//  ✅ MAIN ENDPOINT mà bot đang gọi:
+//     GET /api/taixiumd5/lc79?key=...
+// ═══════════════════════════════════════════════════════════════════
+app.get("/api/taixiumd5/lc79", async (req, reply) => {
+    if (!checkKey(req, reply)) return;
+    return handlePredict(req, reply, false);
+});
+
+app.get("/api/taixiumd5/lc79/detail", async (req, reply) => {
+    if (!checkKey(req, reply)) return;
+    return handlePredict(req, reply, true);
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  Alias /predict (giữ để tương thích)
+// ═══════════════════════════════════════════════════════════════════
+app.get("/predict", async (req, reply) => {
+    if (!checkKey(req, reply)) return;
+    return handlePredict(req, reply, false);
+});
+
+app.get("/predict/detail", async (req, reply) => {
+    if (!checkKey(req, reply)) return;
+    return handlePredict(req, reply, true);
+});
+
+// ═══════════════════════════════════════════════════════════════════
+//  GET /history
 // ═══════════════════════════════════════════════════════════════════
 app.get("/history", async (req, reply) => {
     if (!checkKey(req, reply)) return;
-
     await refreshHistory();
 
     const limit = Math.min(Number(req.query.limit) || 50, 500);
@@ -953,18 +942,15 @@ app.get("/history", async (req, reply) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  GET /history/chart  — Biểu đồ cầu N phiên
+//  GET /history/chart
 // ═══════════════════════════════════════════════════════════════════
 app.get("/history/chart", async (req, reply) => {
     if (!checkKey(req, reply)) return;
-
     await refreshHistory();
 
     const n = Math.min(Number(req.query.n) || N_CHART, 200);
     const slice = history.slice(0, n);
     const ch = slice.slice().reverse().map(x => toC(x.result)).join("");
-
-    // Thống kê chuỗi bệt hiện tại
     const st = streaks(history);
     const cur = st[0] || { type: "-", len: 0 };
 
@@ -973,10 +959,7 @@ app.get("/history/chart", async (req, reply) => {
         admin: ADMIN,
         so_phien: slice.length,
         bieu_do: ch,
-        chuoi_hien_tai: {
-            ket_qua: cur.type,
-            do_dai: cur.len,
-        },
+        chuoi_hien_tai: { ket_qua: cur.type, do_dai: cur.len },
         thong_ke: {
             tai: slice.filter(x => x.result === "Tài").length,
             xiu: slice.filter(x => x.result === "Xỉu").length,
@@ -985,11 +968,10 @@ app.get("/history/chart", async (req, reply) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  GET /sessions  — Raw danh sách phiên
+//  GET /sessions
 // ═══════════════════════════════════════════════════════════════════
 app.get("/sessions", async (req, reply) => {
     if (!checkKey(req, reply)) return;
-
     await refreshHistory();
 
     const limit = Math.min(Number(req.query.limit) || 30, 200);
@@ -1002,7 +984,7 @@ app.get("/sessions", async (req, reply) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  GET /stats  — Thống kê BMA + pattern learner
+//  GET /stats
 // ═══════════════════════════════════════════════════════════════════
 app.get("/stats", async (req, reply) => {
     if (!checkKey(req, reply)) return;
@@ -1047,12 +1029,11 @@ app.get("/stats", async (req, reply) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════
-//  GET /reset  — Reset engine + history (chỉ admin)
+//  GET /reset
 // ═══════════════════════════════════════════════════════════════════
 app.get("/reset", async (req, reply) => {
     if (!checkKey(req, reply)) return;
-    const confirm = req.query.confirm;
-    if (confirm !== "yes") {
+    if (req.query.confirm !== "yes") {
         return reply.send({ ok: false, error: "Cần ?confirm=yes" });
     }
     history = [];
@@ -1072,13 +1053,6 @@ app.listen({ port: PORT, host: "0.0.0.0" }, (err, addr) => {
     console.log(`🚀 LC79 Engine @ ${addr}`);
     console.log(`👑 Admin: ${ADMIN}`);
     console.log(`🔑 Key:   ${VALID_KEY}`);
-    console.log(`📡 APIs:`);
-    console.log(`   GET /                       → health check`);
-    console.log(`   GET /predict?key=...        → dự đoán gọn`);
-    console.log(`   GET /predict/detail?key=... → dự đoán + signals`);
-    console.log(`   GET /history?key=...        → lịch sử phiên`);
-    console.log(`   GET /history/chart?key=...  → biểu đồ cầu`);
-    console.log(`   GET /stats?key=...          → thống kê BMA`);
-    console.log(`   GET /sessions?key=...       → raw sessions`);
-    console.log(`   GET /reset?key=...&confirm=yes → reset engine`);
+    console.log(`📡 MAIN endpoint:`);
+    console.log(`   GET /api/taixiumd5/lc79?key=...`);
 });
