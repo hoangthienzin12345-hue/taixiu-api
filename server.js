@@ -131,7 +131,6 @@ function analyze(state) {
     let pTai, tier, note, matchNames;
 
     if (matched.length > 0) {
-        // ── Có pattern match → ensemble có trọng số
         let num = 0, den = 0;
         for (const s of matched) { num += s.p_tai * s.w; den += s.w; }
         pTai = den ? num / den / 100 : 0.5;
@@ -145,15 +144,12 @@ function analyze(state) {
         note = `${matched.map(s => s.note).join(" + ")}`;
         matchNames = matched.map(s => s.id).join(",");
     } else if (streak >= 4) {
-        // ── FIX: bệt dài không pattern → ĐẢO BỆT
-        // streak càng dài càng chắc đảo
         const pRev = last === "T" ? 0.35 : 0.65;
         pTai = pRev;
         tier = streak >= 7 ? "STRONG" : streak >= 5 ? "OK" : "SINGLE";
         note = `Đảo bệt ${last}×${streak}`;
         matchNames = "REVERSAL";
     } else {
-        // ── Không match, không streak → NEUTRAL
         pTai = 0.5;
         tier = "NO_PATTERN";
         note = "Không có pattern";
@@ -180,28 +176,38 @@ function analyze(state) {
         wilson, streak, last,
         last15: seq.slice(-15).join(""),
         matchNames, note,
-        signals,
     };
 }
 
 // ═══════════════════════════════════════════════════════════════════
-//  PARSE
+//  PARSE — DÙNG point ĐỂ SUY result (không dựa string field)
 // ═══════════════════════════════════════════════════════════════════
 function parseHu(data) {
     if (!data?.list || !Array.isArray(data.list)) return [];
-    return data.list.sort((a, b) => b.id - a.id).map(it => ({
-        id: it.id, dices: it.dices, point: it.point,
-        result: it.point >= 11 ? "TAI" : "XIU",
-        result_vn: it.point >= 11 ? "Tài" : "Xỉu",
-    })).sort((a, b) => a.id - b.id);
+    return data.list
+        .sort((a, b) => b.id - a.id)
+        .map(it => ({
+            id: it.id,
+            dices: it.dices,
+            point: it.point,
+            result: it.point >= 11 ? "TAI" : "XIU",
+            result_vn: it.point >= 11 ? "Tài" : "Xỉu",
+        }))
+        .sort((a, b) => a.id - b.id);
 }
+
 function parseMd5(data) {
     if (!data?.list || !Array.isArray(data.list)) return [];
-    return data.list.sort((a, b) => b.id - a.id).map(it => ({
-        id: it.id, dices: it.dices, point: it.point,
-        result: it.resultTruyenThong === "Tài" ? "TAI" : "XIU",
-        result_vn: it.resultTruyenThong,
-    })).sort((a, b) => a.id - b.id);
+    return data.list
+        .sort((a, b) => b.id - a.id)
+        .map(it => ({
+            id: it.id,
+            dices: it.dices,
+            point: it.point,
+            result: it.point >= 11 ? "TAI" : "XIU",   // ← FIX: dùng point
+            result_vn: it.point >= 11 ? "Tài" : "Xỉu",
+        }))
+        .sort((a, b) => a.id - b.id);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -215,13 +221,21 @@ const stateHu = mkState(), stateMd5 = mkState();
 function updateState(state, arr) {
     if (!arr.length) return;
     const latest = arr[arr.length - 1].id;
-    if (!state.lastId) { state.sessions = arr; state.lastId = latest; console.log(`✅ Loaded ${arr.length}`); return; }
+    if (!state.lastId) {
+        state.sessions = arr;
+        state.lastId = latest;
+        console.log(`✅ Loaded ${arr.length}`);
+        return;
+    }
     if (latest > state.lastId) {
         const news = arr.filter(r => r.id > state.lastId);
         for (const r of news) {
             if (state.lastPred && state.lastPred.session === r.id) {
                 const win = state.lastPred.predict === r.result;
-                state.history.push({ sessionId: r.id, predict: state.lastPred.predict, actual: r.result, result: win ? "WIN" : "LOSE" });
+                state.history.push({
+                    sessionId: r.id, predict: state.lastPred.predict,
+                    actual: r.result, result: win ? "WIN" : "LOSE",
+                });
                 if (state.history.length > 500) state.history.shift();
                 state.lastPred = null;
             }
@@ -233,8 +247,18 @@ function updateState(state, arr) {
     }
 }
 
-async function fetchHu()  { try { updateState(stateHu,  parseHu(await fetchJSON(API_URL_HU)));   stateHu.lastFetchAt  = Date.now(); } catch (e) { console.error("HU:",  e.message); } }
-async function fetchMd5() { try { updateState(stateMd5, parseMd5(await fetchJSON(API_URL_MD5))); stateMd5.lastFetchAt = Date.now(); } catch (e) { console.error("MD5:", e.message); } }
+async function fetchHu() {
+    try {
+        updateState(stateHu, parseHu(await fetchJSON(API_URL_HU)));
+        stateHu.lastFetchAt = Date.now();
+    } catch (e) { console.error("HU:", e.message); }
+}
+async function fetchMd5() {
+    try {
+        updateState(stateMd5, parseMd5(await fetchJSON(API_URL_MD5)));
+        stateMd5.lastFetchAt = Date.now();
+    } catch (e) { console.error("MD5:", e.message); }
+}
 
 function getPrediction(state) {
     if (state.sessions.length < 15) return null;
@@ -277,13 +301,17 @@ function buildResp(state, game) {
 // ═══════════════════════════════════════════════════════════════════
 //  SERVER
 // ═══════════════════════════════════════════════════════════════════
-const checkKey = q => q.key === VALID_KEY ? { valid: true } : { valid: false, error: `Sai key! Ib ${ADMIN}` };
+const checkKey = q => q.key === VALID_KEY
+    ? { valid: true }
+    : { valid: false, error: `Sai key! Ib ${ADMIN}` };
+
 const app = fastify({ logger: false, disableRequestLogging: true });
 app.register(cors, { origin: "*" });
 
 app.get("/", async () => ({
-    status: "ok", admin: ADMIN,
-    engine: "LC79 v12 — 6 PATTERNS + ĐẢO BỆT FALLBACK",
+    status: "ok",
+    admin: ADMIN,
+    engine: "LC79 v13 — 6 PATTERNS + ĐẢO BỆT",
     hu:  { loaded: stateHu.sessions.length,  last_id: stateHu.lastId },
     md5: { loaded: stateMd5.sessions.length, last_id: stateMd5.lastId },
 }));
@@ -294,22 +322,32 @@ const route = (game, state) => async (req, rep) => {
     const r = buildResp(state, game);
     return r || rep.status(503).send({ error: `Đang tải ${game}...` });
 };
+
 app.get("/api/taixiu/lc79",    route("HŨ",  stateHu));
 app.get("/api/taixiumd5/lc79", route("MD5", stateMd5));
 
 app.get("/api/taixiu/lc79/history", async (req, rep) => {
     const k = checkKey(req.query); if (!k.valid) return rep.status(401).send({ error: k.error });
-    return stateHu.sessions.slice(-30).reverse().map(i => ({ session: i.id, dice: i.dices, total: i.point, result: i.result_vn.toLowerCase() }));
+    return stateHu.sessions.slice(-30).reverse().map(i => ({
+        session: i.id, dice: i.dices, total: i.point, result: i.result_vn.toLowerCase(),
+    }));
 });
 app.get("/api/taixiumd5/lc79/history", async (req, rep) => {
     const k = checkKey(req.query); if (!k.valid) return rep.status(401).send({ error: k.error });
-    return stateMd5.sessions.slice(-30).reverse().map(i => ({ session: i.id, dice: i.dices, total: i.point, result: i.result_vn.toLowerCase() }));
+    return stateMd5.sessions.slice(-30).reverse().map(i => ({
+        session: i.id, dice: i.dices, total: i.point, result: i.result_vn.toLowerCase(),
+    }));
 });
 
 app.get("/api/taixiu/lc79/ai-history", async (req, rep) => {
     const k = checkKey(req.query); if (!k.valid) return rep.status(401).send({ error: k.error });
-    const wins = stateHu.history.filter(x => x.result === "WIN").length, tot = stateHu.history.length;
-    return { total: tot, wins, loses: tot - wins, winrate: tot ? (wins / tot * 100).toFixed(2) + "%" : "N/A", recent: stateHu.history.slice(-30).reverse() };
+    const wins = stateHu.history.filter(x => x.result === "WIN").length;
+    const tot  = stateHu.history.length;
+    return {
+        total: tot, wins, loses: tot - wins,
+        winrate: tot ? (wins / tot * 100).toFixed(2) + "%" : "N/A",
+        recent: stateHu.history.slice(-30).reverse(),
+    };
 });
 
 app.get("/check-key", async req => req.query.key === VALID_KEY
@@ -317,7 +355,7 @@ app.get("/check-key", async req => req.query.key === VALID_KEY
     : { status: "error", message: `Sai key! Ib ${ADMIN}` });
 
 app.listen({ port: PORT, host: "0.0.0.0" }).then(() => {
-    console.log(`🚀 [${PORT}] LC79 v12 online`);
+    console.log(`🚀 [${PORT}] LC79 v13 online`);
     setTimeout(() => { fetchHu().catch(() => {}); fetchMd5().catch(() => {}); }, 100);
     setInterval(() => fetchHu().catch(() => {}),  6000);
     setInterval(() => fetchMd5().catch(() => {}), 6000);
