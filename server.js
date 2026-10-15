@@ -426,9 +426,33 @@ function analyze(state) {
 // ═══════════════════════════════════════════════════════════════════
 //  STATE MANAGEMENT & DATA FETCHING
 // ═══════════════════════════════════════════════════════════════════
-const parseHu = d => d.data || [];
-const parseMd5 = d => d.data || [];
+// ✅ ĐÚNG — API trả về field "list", không phải "data"
+const parseHu = d => {
+    if (!d?.list || !Array.isArray(d.list)) return [];
+    return d.list
+        .map(item => ({
+            id:     item.id,
+            dices:  item.dices || [0, 0, 0],
+            point:  Number(item.point) || 0,
+            result: (Number(item.point) >= 11) ? "TÀI" : "XỈU",
+        }))
+        .sort((a, b) => a.id - b.id);
+};
 
+const parseMd5 = d => {
+    if (!d?.list || !Array.isArray(d.list)) return [];
+    return d.list
+        .map(item => {
+            const raw = String(item.resultTruyenThong || "").toUpperCase();
+            return {
+                id:     item.id,
+                dices:  item.dices || [0, 0, 0],
+                point:  Number(item.point) || 0,
+                result: (raw.includes("TÀI") || raw === "TAI") ? "TÀI" : "XỈU",
+            };
+        })
+        .sort((a, b) => a.id - b.id);
+};
 const mkState = () => ({
     sessions: [], lastId: null, history: [], lastPred: null,
     lastFetchAt: 0, lastFetchOk: false, lastError: null, fetchCount: 0,
@@ -536,31 +560,13 @@ function buildResp(state, game) {
     const last = state.sessions[state.sessions.length - 1];
 
     return {
-        Id: ADMIN,
+        Id:          ADMIN,
+        Phien_nay:   last.id + 1,
+        Du_doan:     ai.predict === "TAI" ? "TÀI" : "XỈU",
+        Ty_le:       `${(Math.max(ai.p_tai, ai.p_xiu) * 100).toFixed(1)}%`,
         Phien_truoc: last.id,
-        Xuc_xac: `${last.dices[0]} - ${last.dices[1]} - ${last.dices[2]}`,
-        Ket_qua: last.result,
-        Tong: last.point,
-        Phien_nay: last.id + 1,
-        Du_doan: ai.predict === "TAI" ? "TÀI" : "XỈU",
-        Ty_le: `${(ai.p_tai * 100).toFixed(1)}% TÀI / ${(ai.p_xiu * 100).toFixed(1)}% XỈU`,
-        Do_tin_cay: `${ai.confidence.toFixed(1)}%`,
-        Ly_do: `ENSEMBLE-${ALL_ALGORITHMS.length} · ${ai.tier} · Agree ${ai.agreement.toFixed(0)}% · ${ai.activeCount}/${ALL_ALGORITHMS.length} mod`,
-        Game: game,
-        AI: {
-            engine: `ENSEMBLE-${ALL_ALGORITHMS.length}-SELF-LEARNING`,
-            tier: ai.tier,
-            p_tai: +ai.p_tai.toFixed(4),
-            p_xiu: +ai.p_xiu.toFixed(4),
-            confidence: +ai.confidence.toFixed(2),
-            agreement: +ai.agreement.toFixed(1),
-            active_modules: ai.activeCount,
-            top_signals: ai.top.slice(0, 3).map(s => ({
-                algorithm: s.id,
-                probability: s.p_tai.toFixed(1),
-                weight: s.weight.toFixed(2)
-            }))
-        }
+        Xuc_xac:     `${last.dices[0]}-${last.dices[1]}-${last.dices[2]}`,
+        Ket_qua:     last.result,
     };
 }
 
