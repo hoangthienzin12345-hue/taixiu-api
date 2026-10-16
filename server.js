@@ -5,7 +5,7 @@ import cors from "@fastify/cors";
 //  TÀI XỈU LC79 — CẦU ENGINE v3 (72 PATTERN DETECTORS)
 // ═══════════════════════════════════════════════════════════════════
 const PORT      = process.env.PORT || 3000;
-const VALID_KEY = "Thiên456";
+const VALID_KEY = "Thien456";
 const ADMIN     = "@ADMNLc79";
 
 const API = {
