@@ -7,7 +7,7 @@ import cors from "@fastify/cors";
 //  Deterministic · no random · no auto-bet · self-learning
 // ═══════════════════════════════════════════════════════════════════
 const PORT      = process.env.PORT || 3000;
-const VALID_KEY = "Thiên456";
+const VALID_KEY = "Thien456";
 const ADMIN     = "@ADMNLc79";
 
 const API = {
