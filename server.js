@@ -1,5 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-//  TÀI XỈU LC79 — 10 THUẬT TOÁN + CẦU CƠ BẢN
+//  TÀI XỈU LC79 — CẦU ENGINE
+//  6 pattern: Đảo/Thuận, 1-1, 2-2, 2-1-2, 1-2-1, 3-3 (dựa trên 5 phiên gần nhất)
 // ═══════════════════════════════════════════════════════════════════════════════
 import fastify from "fastify";
 import cors from "@fastify/cors";
@@ -12,7 +13,7 @@ const API = {
     md5: "https://wtxmd52.tele68.com/v1/txmd5/sessions",
     hu:  "https://wtx.tele68.com/v1/tx/lite-sessions?cp=R&cl=R&pf=web&at=83991213bfd4c554dc94bcd98979bdc5",
 };
-const MAX  = 60;
+const MAX  = 30;
 const POLL = 5000;
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -60,384 +61,120 @@ function parseRows(json) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  10 THUẬT TOÁN PHÂN TÍCH
+//  6 CẦU — CHỈ DÙNG 5 PHIÊN GẦN NHẤT
 // ═══════════════════════════════════════════════════════════════════════════════
-const A = {};
+function detect(seq) {
+    if (seq.length < 5) return [];
 
-// [1] Streak — độ dài bệt hiện tại
-A.streak = seq => {
-    if (!seq.length) return { len: 0, side: null };
-    const side = seq[seq.length - 1];
-    let len = 1;
-    for (let i = seq.length - 2; i >= 0; i--) {
-        if (seq[i] === side) len++;
-        else break;
-    }
-    return { len, side };
-};
-
-// [2] Frequency — tỷ lệ Tài trong N phiên
-A.freq = (seq, w = 20) => {
-    const s = seq.slice(-w);
-    if (!s.length) return 0.5;
-    return s.filter(x => x === "T").length / s.length;
-};
-
-// [3] Markov chain — P(next | last k)
-A.markov = (seq, order = 2) => {
-    if (seq.length < order + 5) return null;
-    const ctx = seq.slice(-order).join("");
-    let t = 0, x = 0;
-    for (let i = order; i < seq.length; i++) {
-        if (seq.slice(i - order, i).join("") === ctx) {
-            if (seq[i] === "T") t++;
-            else x++;
-        }
-    }
-    const tot = t + x;
-    if (tot < 3) return null;
-    return { pT: t / tot, n: tot };
-};
-
-// [4] Alternating — chuỗi đảo chiều
-A.alternating = seq => {
-    const s = seq.slice(-10);
-    if (s.length < 4) return null;
-    let alt = 0;
-    for (let i = 1; i < s.length; i++) if (s[i] !== s[i - 1]) alt++;
-    return { rate: alt / (s.length - 1), last: s[s.length - 1] };
-};
-
-// [5] Momentum — so sánh ngắn vs dài hạn
-A.momentum = seq => {
-    const short = A.freq(seq, 5);
-    const long  = A.freq(seq, 20);
-    return short - long;
-};
-
-// [6] Entropy — độ hỗn loạn
-A.entropy = seq => {
-    const s = seq.slice(-30);
-    if (!s.length) return 1;
-    const p = s.filter(x => x === "T").length / s.length;
-    if (p <= 0 || p >= 1) return 0;
-    return -(p * Math.log2(p) + (1 - p) * Math.log2(1 - p));
-};
-
-// [7] Mean reversion — hồi quy trung bình
-A.meanRev = seq => {
-    const p = A.freq(seq, 15);
-    if (p > 0.7) return -1;
-    if (p < 0.3) return 1;
-    return 0;
-};
-
-// [8] Transition matrix — T→T vs X→X
-A.trans = seq => {
-    if (seq.length < 8) return null;
-    let tt = 0, tx = 0, xt = 0, xx = 0;
-    for (let i = 1; i < seq.length; i++) {
-        if (seq[i-1] === "T" && seq[i] === "T") tt++;
-        else if (seq[i-1] === "T") tx++;
-        else if (seq[i] === "T") xt++;
-        else xx++;
-    }
-    const last = seq[seq.length - 1];
-    if (last === "T") {
-        const tot = tt + tx;
-        if (tot < 3) return null;
-        return { pT: tt / tot, n: tot };
-    }
-    const tot = xt + xx;
-    if (tot < 3) return null;
-    return { pT: xt / tot, n: tot };
-};
-
-// [9] Cycle — chu kỳ lặp (đơn giản)
-A.cycle = seq => {
-    for (let P = 2; P <= 8; P++) {
-        if (seq.length < P * 3) continue;
-        const tail = seq.slice(-P * 3);
-        let m = 0;
-        for (let i = 0; i < tail.length - P; i++) if (tail[i] === tail[i + P]) m++;
-        const score = m / (tail.length - P);
-        if (score >= 0.85) {
-            return { P, pred: seq[seq.length - P] };
-        }
-    }
-    return null;
-};
-
-// [10] Bayesian — Beta(a,b) với decay
-A.bayes = seq => {
-    const s = seq.slice(-30);
-    let a = 1, b = 1;
-    for (let i = 0; i < s.length; i++) {
-        const w = Math.pow(0.95, s.length - 1 - i);
-        if (s[i] === "T") a += w;
-        else b += w;
-    }
-    return a / (a + b);
-};
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  CẦU CƠ BẢN
-// ═══════════════════════════════════════════════════════════════════════════════
-
-// [C1] Cầu bệt — theo/bẻ
-function cauBet(seq) {
-    const st = A.streak(seq);
-    if (st.len < 2) return null;
-    if (st.len >= 3 && st.len <= 5) {
-        return { pred: st.side, conf: 62 + (st.len - 3) * 3, note: `Bệt ${st.len} → theo` };
-    }
-    if (st.len === 6) {
-        return { pred: st.side, conf: 63, note: `Bệt 6 → theo` };
-    }
-    if (st.len >= 7 && st.len <= 9) {
-        return { pred: st.side === "T" ? "X" : "T", conf: 75, note: `Bệt ${st.len} → BẺ` };
-    }
-    if (st.len >= 10) {
-        return { pred: st.side === "T" ? "X" : "T", conf: 82, note: `Bệt ${st.len} → BẺ mạnh` };
-    }
-    return null;
-}
-
-// [C2] Cầu 1-1 (T-X-T-X)
-function cau11(seq) {
-    if (seq.length < 4) return null;
-    const r = seq.slice(-4);
-    if (r[0] !== r[1] && r[1] !== r[2] && r[2] !== r[3]) {
-        return { pred: r[3] === "T" ? "X" : "T", conf: 72, note: "Cầu 1-1 → đảo" };
-    }
-    return null;
-}
-
-// [C3] Cầu 2-2 (TT-XX)
-function cau22(seq) {
-    if (seq.length < 4) return null;
-    const r = seq.slice(-4);
-    if (r[0] === r[1] && r[2] === r[3] && r[0] !== r[2]) {
-        return { pred: r[0], conf: 75, note: "Cầu 2-2 → theo" };
-    }
-    return null;
-}
-
-// [C4] Cầu 3-3 (TTT-XXX)
-function cau33(seq) {
-    if (seq.length < 6) return null;
-    const r = seq.slice(-6);
-    if (r[0] === r[1] && r[1] === r[2] && r[3] === r[4] && r[4] === r[5] && r[0] !== r[3]) {
-        return { pred: r[0], conf: 78, note: "Cầu 3-3 → theo" };
-    }
-    return null;
-}
-
-// [C5] Cầu 2-1 (TT-X)
-function cau21(seq) {
-    if (seq.length < 3) return null;
-    const r = seq.slice(-3);
-    if (r[0] === r[1] && r[0] !== r[2]) {
-        return { pred: r[0], conf: 68, note: "Cầu 2-1 → tiếp" };
-    }
-    return null;
-}
-
-// [C6] Cầu 1-2 (T-XX)
-function cau12(seq) {
-    if (seq.length < 3) return null;
-    const r = seq.slice(-3);
-    if (r[0] !== r[1] && r[1] === r[2]) {
-        return { pred: r[0], conf: 68, note: "Cầu 1-2 → tiếp" };
-    }
-    return null;
-}
-
-// [C7] Cầu 3-1 (TTT-X)
-function cau31(seq) {
-    if (seq.length < 4) return null;
-    const r = seq.slice(-4);
-    if (r[0] === r[1] && r[1] === r[2] && r[2] !== r[3]) {
-        return { pred: r[0], conf: 72, note: "Cầu 3-1 → tiếp" };
-    }
-    return null;
-}
-
-// [C8] Nhịp 1-2-1
-function cauNhip121(seq) {
-    if (seq.length < 4) return null;
-    const r = seq.slice(-4);
-    if (r[0] !== r[1] && r[1] === r[2] && r[2] !== r[3]) {
-        return { pred: r[1], conf: 70, note: "Nhịp 1-2-1" };
-    }
-    return null;
-}
-
-// [C9] Cầu mặt xúc xắc
-function cauDice(dice) {
-    if (!dice || dice.length < 3) return null;
-    const [a, b, c] = dice;
-
-    // Kép bé (1-1, 2-2) → XỈU
-    if ((a === b && a <= 2) || (b === c && b <= 2))
-        return { pred: "X", conf: 78, note: `Kép bé [${a}-${b}-${c}] → XỈU` };
-
-    // Kép lớn (5-5, 6-6) → TÀI
-    if ((a === b && a >= 5) || (b === c && b >= 5))
-        return { pred: "T", conf: 78, note: `Kép lớn [${a}-${b}-${c}] → TÀI` };
-
-    // 2 mặt 6 → XỈU
-    const c6 = dice.filter(x => x === 6).length;
-    if (c6 === 2) return { pred: "X", conf: 82, note: "2 mặt 6 → XỈU" };
-
-    // 2 mặt 1 → TÀI
-    const c1 = dice.filter(x => x === 1).length;
-    if (c1 === 2) return { pred: "T", conf: 72, note: "2 mặt 1 → TÀI" };
-
-    // Gánh (a-b-a) → ĐẢO
-    if (a === c && a !== b) return { pred: "ĐẢO", conf: 82, note: `Gánh [${a}-${b}-${a}]` };
-
-    // Tiến (1-2-3) → TÀI
-    if (a + 1 === b && b + 1 === c) return { pred: "T", conf: 75, note: `Tiến [${a}-${b}-${c}]` };
-
-    // Lùi (6-5-4) → XỈU
-    if (a - 1 === b && b - 1 === c) return { pred: "X", conf: 75, note: `Lùi [${a}-${b}-${c}]` };
-
-    return null;
-}
-
-// [C10] Cầu tổng điểm
-function cauTong(point) {
-    if (!point || point < 3 || point > 18) return null;
-    if (point >= 17) return { pred: "X", conf: 70, note: `Tổng ${point} → XỈU` };
-    if (point <= 4)  return { pred: "T", conf: 70, note: `Tổng ${point} → TÀI` };
-    if (point === 10) return { pred: "T", conf: 75, note: "Tổng 10 → TÀI" };
-    if (point === 11) return { pred: "X", conf: 72, note: "Tổng 11 → XỈU" };
-    if (point === 14) return { pred: "X", conf: 68, note: "Tổng 14 → XỈU" };
-    if (point === 18) return { pred: "T", conf: 85, note: "Tổng 18 → TÀI" };
-    return null;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  DỰ ĐOÁN TỔNG HỢP
-// ═══════════════════════════════════════════════════════════════════════════════
-function predict(sessions) {
-    if (sessions.length < 10) return null;
-
-    const seq = sessions.map(s => s.r);
-    const last = sessions[sessions.length - 1];
+    const last  = seq[seq.length - 1];
+    const last4 = seq.slice(-4);   // 4 phiên cuối
+    const last5 = seq.slice(-5);   // 5 phiên cuối
+    const OPP   = last === "T" ? "X" : "T";
     const signals = [];
 
-    // ── 10 thuật toán phân tích ──
-    const st   = A.streak(seq);
-    const f20  = A.freq(seq, 20);
-    const f10  = A.freq(seq, 10);
-    const mk2  = A.markov(seq, 2);
-    const mk3  = A.markov(seq, 3);
-    const alt  = A.alternating(seq);
-    const mom  = A.momentum(seq);
-    const ent  = A.entropy(seq);
-    const mr   = A.meanRev(seq);
-    const tr   = A.trans(seq);
-    const cyc  = A.cycle(seq);
-    const bay  = A.bayes(seq);
+    // ─── [1] ĐẢO / THUẬN — đếm số lần đảo trong 5 phiên ───
+    let alt = 0;
+    for (let i = 1; i < 5; i++) if (last5[i] !== last5[i - 1]) alt++;
 
-    // 1. Streak
-    if (st.len >= 3 && st.len <= 5) {
-        signals.push({ src: "Streak", pred: st.side, conf: 60 + st.len * 2 });
-    } else if (st.len >= 7) {
-        signals.push({ src: "Streak", pred: st.side === "T" ? "X" : "T", conf: 72 });
+    if (alt === 4) {
+        // 5 phiên đảo hoàn toàn (T-X-T-X-T hoặc X-T-X-T-X)
+        signals.push({ name: "Đảo", side: OPP, conf: 72, note: "5 phiên đảo 4/4 → tiếp đảo" });
+    } else if (alt === 3) {
+        // 4/5 đảo
+        signals.push({ name: "Đảo", side: OPP, conf: 62, note: "Đảo 3/4 → nghiêng đảo" });
+    } else if (alt === 1) {
+        // 1/5 đảo = gần như thuận
+        signals.push({ name: "Thuận", side: last, conf: 68, note: "5 phiên thuận 3/4" });
+    } else if (alt === 0) {
+        // Không đảo lần nào = bệt 5 tay
+        signals.push({ name: "Thuận", side: last, conf: 60, note: "5 phiên thuận 4/4" });
     }
 
-    // 2. Frequency
-    if (f20 > 0.65) signals.push({ src: "Freq20", pred: "X", conf: 62 });
-    else if (f20 < 0.35) signals.push({ src: "Freq20", pred: "T", conf: 62 });
-
-    // 3. Markov bậc 2
-    if (mk2 && mk2.n >= 5 && Math.abs(mk2.pT - 0.5) > 0.15) {
-        signals.push({ src: "Markov2", pred: mk2.pT > 0.5 ? "T" : "X", conf: 60 + Math.abs(mk2.pT - 0.5) * 60 });
+    // ─── [2] CẦU 1-1 (T-X-T-X) ───
+    if (last4[0] !== last4[1] && last4[1] !== last4[2] && last4[2] !== last4[3]) {
+        // TXTX hoặc XTXT → phiên tiếp là đảo của phiên cuối
+        signals.push({ name: "1-1", side: last4[3] === "T" ? "X" : "T", conf: 76, note: "Cầu 1-1 (T-X-T-X)" });
     }
 
-    // 4. Markov bậc 3
-    if (mk3 && mk3.n >= 3 && Math.abs(mk3.pT - 0.5) > 0.2) {
-        signals.push({ src: "Markov3", pred: mk3.pT > 0.5 ? "T" : "X", conf: 65 + Math.abs(mk3.pT - 0.5) * 50 });
+    // ─── [3] CẦU 2-2 (TT-XX hoặc XX-TT) ───
+    if (last4[0] === last4[1] && last4[2] === last4[3] && last4[0] !== last4[2]) {
+        // TTXX → next T ; XXTT → next X
+        signals.push({ name: "2-2", side: last4[0], conf: 74, note: "Cầu 2-2 (TT-XX)" });
     }
 
-    // 5. Alternating
-    if (alt && alt.rate > 0.7) {
-        signals.push({ src: "Alt", pred: alt.last === "T" ? "X" : "T", conf: 68 });
+    // ─── [4] CẦU 2-1-2 (TT-X-TT hoặc XX-T-XX) ───
+    if (last5[0] === last5[1] &&
+        last5[1] !== last5[2] &&
+        last5[2] !== last5[3] &&
+        last5[3] === last5[4] &&
+        last5[0] !== last5[2]) {
+        // TTXTT → next X ; XXTXX → next T
+        signals.push({ name: "2-1-2", side: last5[2], conf: 76, note: "Cầu 2-1-2 (TT-X-TT)" });
     }
 
-    // 6. Momentum
-    if (Math.abs(mom) > 0.15) {
-        signals.push({ src: "Momentum", pred: mom > 0 ? "T" : "X", conf: 58 + Math.abs(mom) * 40 });
+    // ─── [5] CẦU 1-2-1 (T-XX-T hoặc X-TT-X) ───
+    if (last4[0] !== last4[1] &&
+        last4[1] === last4[2] &&
+        last4[2] !== last4[3]) {
+        // TXXT → next X ; XTTX → next T
+        signals.push({ name: "1-2-1", side: last4[1], conf: 72, note: "Cầu 1-2-1 (T-XX-T)" });
     }
 
-    // 7. Entropy thấp (đồng nhất cao)
-    if (ent < 0.75) {
-        signals.push({ src: "Entropy", pred: st.side || "T", conf: 62 });
+    // ─── [6] CẦU 3-3 (TTT-XXX hoặc XXX-TTT) — dùng 6 phiên cuối ───
+    const last6 = seq.slice(-6);
+    if (last6.length === 6 &&
+        last6[0] === last6[1] && last6[1] === last6[2] &&
+        last6[3] === last6[4] && last6[4] === last6[5] &&
+        last6[0] !== last6[3]) {
+        // TTTXXX → next T ; XXXTTT → next X
+        signals.push({ name: "3-3", side: last6[0], conf: 78, note: "Cầu 3-3 (TTT-XXX)" });
     }
 
-    // 8. Mean reversion
-    if (mr > 0) signals.push({ src: "MeanRev", pred: "T", conf: 62 });
-    else if (mr < 0) signals.push({ src: "MeanRev", pred: "X", conf: 62 });
+    return signals;
+}
 
-    // 9. Transition
-    if (tr && tr.n >= 5 && Math.abs(tr.pT - 0.5) > 0.12) {
-        signals.push({ src: "Trans", pred: tr.pT > 0.5 ? "T" : "X", conf: 58 + Math.abs(tr.pT - 0.5) * 50 });
-    }
+// ═══════════════════════════════════════════════════════════════════════════════
+//  DỰ ĐOÁN TỔNG HỢP — WEIGHTED VOTE (cân bằng)
+// ═══════════════════════════════════════════════════════════════════════════════
+function predict(seq) {
+    if (seq.length < 5) return null;
 
-    // 10. Cycle
-    if (cyc) signals.push({ src: `Cycle P=${cyc.P}`, pred: cyc.pred, conf: 70 });
-
-    // 11. Bayesian
-    if (bay > 0.6) signals.push({ src: "Bayes", pred: "T", conf: 58 + (bay - 0.5) * 40 });
-    else if (bay < 0.4) signals.push({ src: "Bayes", pred: "X", conf: 58 + (0.5 - bay) * 40 });
-
-    // ── Cầu cơ bản ──
-    const cauList = [
-        cauBet(seq),
-        cau11(seq),
-        cau22(seq),
-        cau33(seq),
-        cau21(seq),
-        cau12(seq),
-        cau31(seq),
-        cauNhip121(seq),
-        cauDice(last.dices),
-        cauTong(last.point),
-    ];
-
-    for (const c of cauList) {
-        if (!c) continue;
-        let pred = c.pred;
-        if (pred === "ĐẢO") pred = last.r === "T" ? "X" : "T";
-        signals.push({ src: `Cầu`, pred, conf: c.conf, note: c.note });
-    }
+    const signals = detect(seq);
 
     if (signals.length === 0) {
-        return { prediction: "T", confidence: 52, method: "Không có tín hiệu", signals: [] };
+        return {
+            prediction: "CHỜ",
+            confidence: 0,
+            method: "Không nhận diện được cầu",
+            signals: [],
+            tScore: 0, xScore: 0,
+        };
     }
 
-    // ── Weighted vote ──
+    // Vote có trọng số theo conf
     let tScore = 0, xScore = 0;
     for (const s of signals) {
-        const w = s.conf / 100;
-        if (s.pred === "T") tScore += w;
+        const w = s.conf;
+        if (s.side === "T") tScore += w;
         else xScore += w;
     }
 
     const total = tScore + xScore;
-    const prediction = tScore >= xScore ? "TAI" : "XIU";
     const ratio = Math.max(tScore, xScore) / total;
+    const prediction = tScore >= xScore ? "TAI" : "XIU";
+
+    // Confidence = % đồng thuận, giới hạn 50-95
     const confidence = Math.min(95, Math.round(50 + (ratio - 0.5) * 90));
-    const agree = signals.filter(s => (s.pred === "T" ? "TAI" : "XIU") === prediction).length;
+
+    const agree = signals.filter(s => (s.side === "T" ? "TAI" : "XIU") === prediction).length;
 
     return {
         prediction,
         confidence,
-        method: `${agree}/${signals.length} tín hiệu đồng thuận`,
+        method: `${agree}/${signals.length} cầu đồng thuận`,
         signals: signals.sort((a, b) => b.conf - a.conf),
+        tScore: Math.round(tScore),
+        xScore: Math.round(xScore),
     };
 }
 
@@ -458,21 +195,18 @@ function update(key, arr) {
         st.sessions = arr;
         st.lastId = latest.id;
         console.log(`✅ [${key.toUpperCase()}] ${arr.length} phiên`);
-        return;
-    }
-
-    if (latest.id_num > st.lastId) {
-        const news = arr.filter(r => r.id > st.lastId);
+    } else if (latest.id_num > st.lastId) {
+        const news = arr.filter(r => r.id_num > st.lastId);
         for (const r of news) st.sessions.push(r);
         if (st.sessions.length > 500) st.sessions = st.sessions.slice(-450);
         st.lastId = latest.id;
         console.log(`🆕 [${key.toUpperCase()}] +${news.length}`);
     }
 
-    // Dự đoán
+    // Dự đoán dựa trên phiên gần nhất
     const recent = st.sessions.slice(-MAX);
     st.latest = recent[recent.length - 1];
-    st.pred = predict(recent);
+    st.pred = predict(recent.map(s => s.r));
 }
 
 async function poll(key) {
@@ -494,11 +228,16 @@ function buildResp(key) {
     const last = st.latest;
     const p = st.pred;
 
+    let duDoan = "CHỜ";
+    let tyLe = "--";
+    if (p.prediction === "TAI") { duDoan = "TÀI"; tyLe = `${p.confidence}%`; }
+    else if (p.prediction === "XIU") { duDoan = "XỈU"; tyLe = `${p.confidence}%`; }
+
     return {
         Id:          ADMIN,
         Phien_nay:   last.id_num + 1,
-        Du_doan:     p.prediction === "TAI" ? "TÀI" : "XỈU",
-        Ty_le:       `${p.confidence}%`,
+        Du_doan:     duDoan,
+        Ty_le:       tyLe,
         Phien_truoc: last.id_num,
         Xuc_xac:     last.dices?.length === 3 ? last.dices.join("-") : "—",
         Ket_qua:     last.r === "T" ? "TÀI" : "XỈU",
@@ -519,7 +258,7 @@ await app.register(cors, { origin: "*" });
 app.get("/", async () => ({
     status: "ok",
     admin: ADMIN,
-    engine: "10 thuật toán + cầu cơ bản",
+    engine: "Cầu Engine — Đảo/Thuận · 1-1 · 2-2 · 2-1-2 · 1-2-1 · 3-3",
     hu:  { loaded: state.hu.sessions.length,  last_id: state.hu.lastId },
     md5: { loaded: state.md5.sessions.length, last_id: state.md5.lastId },
 }));
@@ -543,8 +282,17 @@ app.get("/api/debug/:loai", async (req, rep) => {
     if (!k.valid) return rep.status(401).send({ error: k.error });
     const st = req.params.loai === "md5" ? state.md5 : state.hu;
     if (!st.latest) return rep.status(503).send({ error: "Chưa đủ dữ liệu" });
+
+    const last5 = st.sessions.slice(-5).map(s => s.r);
     return {
-        last: { id: st.latest.id_num, result: st.latest.r, dice: st.latest.dices, point: st.latest.point },
+        last: {
+            id: st.latest.id_num,
+            result: st.latest.r,
+            dice: st.latest.dices,
+            point: st.latest.point,
+        },
+        last5: last5.join(""),
+        last5_pretty: last5.map(x => x === "T" ? "Tài" : "Xỉu").join(" - "),
         prediction: st.pred,
     };
 });
@@ -561,11 +309,12 @@ app.listen({ port: PORT, host: "0.0.0.0" })
     .then(() => {
         console.log(`
 ╔══════════════════════════════════════════════════════════════════════╗
-║  🎲 TÀI XỈU LC79 — 10 THUẬT TOÁN + CẦU CƠ BẢN                       ║
+║  🎲 TÀI XỈU LC79 — CẦU ENGINE                                        ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  🚀 Port: ${PORT}
 ║  🔑 Key : ${VALID_KEY}
 ║  👤 Admin: ${ADMIN}
+║  🎯 6 cầu: Đảo/Thuận · 1-1 · 2-2 · 2-1-2 · 1-2-1 · 3-3
 ║  📌 HŨ : /api/taixiu/lc79?key=${VALID_KEY}
 ║  📌 MD5: /api/taixiumd5/lc79?key=${VALID_KEY}
 ║  🐞 Debug: /api/debug/hu?key=${VALID_KEY}
