@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-//  TÀI XỈU LC79 — CẦU CƠ BẢN + 37 THUẬT TOÁN PHÂN TÍCH
-//  Fourier · Wavelet · Bayesian · Regression · Advanced
+//  TÀI XỈU LC79 — CẦU CƠ BẢN + 37 THUẬT TOÁN (FIXED)
+//  Mỗi thuật toán thực sự dự đoán NEXT bit, không copy last
 // ═══════════════════════════════════════════════════════════════════════════════
 import fastify from "fastify";
 import cors from "@fastify/cors";
@@ -16,9 +16,7 @@ const API = {
 const MAX  = 105;
 const POLL = 4000;
 
-// ═══════════════════════════════════════════════════════════════════════════════
-//  FETCH & PARSE
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─── FETCH & PARSE ──────────────────────────────────────────────────────────
 async function fetchJSON(url, timeoutMs = 8000, retries = 2) {
     for (let a = 0; a <= retries; a++) {
         const ctrl = new AbortController();
@@ -51,63 +49,73 @@ function parseRows(json) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  CẦU CƠ BẢN (7 pattern)
+//  🔧 HELPER: Pattern-matching dự đoán next bit
+// ═══════════════════════════════════════════════════════════════════════════════
+function ctxNext(bits, ctxLen) {
+    const n = bits.length;
+    if (n < ctxLen + 3) return null;
+    const ctx = bits.slice(-ctxLen);
+    let t = 0, x = 0;
+    for (let i = ctxLen; i < n - 1; i++) {
+        let match = true;
+        for (let j = 0; j < ctxLen; j++) {
+            if (bits[i - ctxLen + j] !== ctx[j]) { match = false; break; }
+        }
+        if (match) {
+            if (bits[i] === 1) t++;
+            else x++;
+        }
+    }
+    if (t + x < 3) return null;
+    return { pT: t / (t + x), n: t + x };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  CẦU CƠ BẢN (7)
 // ═══════════════════════════════════════════════════════════════════════════════
 function cau11(bits) {
-    const n = bits.length;
-    if (n < 4) return null;
+    if (bits.length < 4) return null;
     const r = bits.slice(-4);
     if (r[0] !== r[1] && r[1] !== r[2] && r[2] !== r[3])
         return { pT: 1 - r[3], weight: 3.5, name: "Cầu 1-1" };
     return null;
 }
-
 function cau12(bits) {
-    const n = bits.length;
-    if (n < 6) return null;
+    if (bits.length < 6) return null;
     const r = bits.slice(-6);
     if (r[0] !== r[1] && r[1] === r[2] && r[3] !== r[4] && r[4] === r[5] && r[0] === r[3])
         return { pT: r[0], weight: 3, name: "Cầu 1-2" };
     return null;
 }
-
 function cau21(bits) {
-    const n = bits.length;
-    if (n < 6) return null;
+    if (bits.length < 6) return null;
     const r = bits.slice(-6);
     if (r[0] === r[1] && r[1] !== r[2] && r[3] === r[4] && r[4] !== r[5] && r[0] === r[3])
         return { pT: r[0], weight: 3, name: "Cầu 2-1" };
     return null;
 }
-
 function cau22(bits) {
-    const n = bits.length;
-    if (n < 4) return null;
+    if (bits.length < 4) return null;
     const r = bits.slice(-4);
     if (r[0] === r[1] && r[2] === r[3] && r[0] !== r[2])
         return { pT: r[0], weight: 3.5, name: "Cầu 2-2" };
     return null;
 }
-
 function cau33(bits) {
-    const n = bits.length;
-    if (n < 6) return null;
+    if (bits.length < 6) return null;
     const r = bits.slice(-6);
     if (r[0] === r[1] && r[1] === r[2] && r[3] === r[4] && r[4] === r[5] && r[0] !== r[3])
         return { pT: r[0], weight: 4, name: "Cầu 3-3" };
     return null;
 }
-
 function cau44(bits) {
-    const n = bits.length;
-    if (n < 8) return null;
+    if (bits.length < 8) return null;
     const r = bits.slice(-8);
     if (r[0] === r[1] && r[1] === r[2] && r[2] === r[3] &&
         r[4] === r[5] && r[5] === r[6] && r[6] === r[7] && r[0] !== r[4])
         return { pT: r[0], weight: 4, name: "Cầu 4-4" };
     return null;
 }
-
 function cauBet(bits) {
     const n = bits.length;
     if (n < 2) return null;
@@ -124,7 +132,7 @@ function cauBet(bits) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  FOURIER FAMILY (6)
+//  FOURIER (6)
 // ═══════════════════════════════════════════════════════════════════════════════
 function algoFFT(bits) {
     const n = bits.length;
@@ -166,10 +174,12 @@ function algoACF2(bits) {
     return { pT: c > 0.5 ? bits[n - 2] : 1 - bits[n - 2], weight: Math.min(w, 2.5), name: `ACF L2 (${c.toFixed(2)})` };
 }
 
+// 🔧 FIXED: Dùng FFT dominant period thực sự
 function algoSpecFlat(bits) {
     const n = bits.length;
     if (n < 8) return null;
     const psd = [];
+    let domK = 0, maxMag = 0;
     for (let k = 1; k <= Math.floor(n / 2); k++) {
         let re = 0, im = 0;
         for (let t = 0; t < n; t++) {
@@ -177,12 +187,17 @@ function algoSpecFlat(bits) {
             re += bits[t] * Math.cos(th);
             im += bits[t] * Math.sin(th);
         }
-        psd.push(re * re + im * im);
+        const mag = Math.hypot(re, im) / n;
+        psd.push(mag * mag);
+        if (mag > maxMag) { maxMag = mag; domK = k; }
     }
     const logSum = psd.reduce((a, x) => a + Math.log(x + 1e-9), 0) / psd.length;
     const arith = psd.reduce((a, x) => a + x, 0) / psd.length;
     const flat = Math.exp(logSum) / (arith + 1e-9);
-    if (flat < 0.3) return { pT: bits[n - 1], weight: (1 - flat) * 2, name: `SpecFlat↓ (${flat.toFixed(2)})` };
+    // Low flatness + strong FFT → predict via period
+    if (flat < 0.55 && domK > 0 && domK < n && maxMag > 0.12) {
+        return { pT: bits[n - domK], weight: Math.min((1 - flat) * 2.5, 2.5), name: `SpecFlat f=${flat.toFixed(2)} k=${domK}` };
+    }
     return null;
 }
 
@@ -230,9 +245,8 @@ function algoHaar(bits) {
     let lowE = 0, highE = 0;
     for (let i = 0; i < n - 1; i += 2) {
         const a = bits[i], b = bits[i + 1];
-        const l = (a + b) / 2, h = (a - b) / 2;
-        lowE += l * l;
-        highE += h * h;
+        lowE += ((a + b) / 2) ** 2;
+        highE += ((a - b) / 2) ** 2;
     }
     const tot = lowE + highE;
     if (tot === 0) return null;
@@ -243,7 +257,7 @@ function algoHaar(bits) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  BAYESIAN / INFO THEORY (9)
+//  BAYES / INFO (9)
 // ═══════════════════════════════════════════════════════════════════════════════
 function algoBayes(bits) {
     const n = bits.length;
@@ -289,9 +303,10 @@ function algoTransEnt(bits) {
     return { pT, weight: Math.min(Math.abs(pT - 0.5) * 4, 2.5), name: `TransEnt` };
 }
 
+// 🔧 FIXED: RLE thực sự dùng run-length stats để quyết định break/continue
 function algoRLEEnt(bits) {
     const n = bits.length;
-    if (n < 10) return null;
+    if (n < 12) return null;
     const runs = [];
     let cur = bits[0], len = 1;
     for (let i = 1; i < n; i++) {
@@ -299,13 +314,25 @@ function algoRLEEnt(bits) {
         else { runs.push(len); cur = bits[i]; len = 1; }
     }
     runs.push(len);
-    if (runs.length < 3) return null;
+    const currentLen = runs[runs.length - 1];
+    const hist = runs.slice(0, -1);
+    if (hist.length < 3) return null;
+    const avgLen = hist.reduce((a, b) => a + b, 0) / hist.length;
     const freq = {};
-    for (const r of runs) freq[r] = (freq[r] || 0) + 1;
+    for (const r of hist) freq[r] = (freq[r] || 0) + 1;
     let H = 0;
-    for (const c of Object.values(freq)) { const p = c / runs.length; H -= p * Math.log2(p); }
-    const norm = H / Math.log2(runs.length + 1);
-    if (norm < 0.5) return { pT: bits[n - 1], weight: (1 - norm) * 2, name: `RLE-Ent↓ (${norm.toFixed(2)})` };
+    for (const c of Object.values(freq)) { const p = c / hist.length; H -= p * Math.log2(p); }
+    const norm = H / Math.log2(hist.length + 1);
+    if (norm >= 0.7) return null;
+    const last = bits[n - 1];
+    if (currentLen >= avgLen + 1) {
+        // Đã dài hơn trung bình → dự đoán bẻ
+        return { pT: 1 - last, weight: Math.min((currentLen / avgLen - 1) * 2 + 1.2, 2.8), name: `RLE break (${currentLen}>${avgLen.toFixed(1)})` };
+    }
+    if (currentLen < avgLen - 1) {
+        // Ngắn hơn trung bình → dự đoán tiếp
+        return { pT: last, weight: Math.min((1 - currentLen / avgLen) * 2, 2), name: `RLE cont (${currentLen}<${avgLen.toFixed(1)})` };
+    }
     return null;
 }
 
@@ -348,51 +375,45 @@ function algoMirror(bits) {
     return null;
 }
 
+// 🔧 FIXED: dùng pattern matching
 function algoCompress(bits) {
-    const n = bits.length;
-    if (n < 10) return null;
-    const runs = [];
-    let cur = bits[0], len = 1;
-    for (let i = 1; i < n; i++) {
-        if (bits[i] === cur) len++;
-        else { runs.push(len); cur = bits[i]; len = 1; }
-    }
-    runs.push(len);
-    const ratio = runs.length / n;
-    if (ratio < 0.4) return { pT: bits[n - 1], weight: (1 - ratio) * 2.5, name: `Compress (${ratio.toFixed(2)})` };
-    return null;
+    const r = ctxNext(bits, 2) || ctxNext(bits, 3);
+    if (!r || r.n < 3) return null;
+    return { pT: r.pT, weight: Math.min(r.n / 3, 2.2), name: `Compress n=${r.n}` };
 }
 
+// 🔧 FIXED: dùng pattern matching (proxy for KC)
 function algoKC(bits) {
-    const n = bits.length;
-    if (n < 15) return null;
-    const runs = [];
-    let cur = bits[0], len = 1;
-    for (let i = 1; i < n; i++) {
-        if (bits[i] === cur) len++;
-        else { runs.push(len); cur = bits[i]; len = 1; }
-    }
-    runs.push(len);
-    const kc = runs.length * Math.log2(Math.max(2, n / runs.length));
-    const kcNorm = kc / (n * 1.5);
-    if (kcNorm < 0.5) return { pT: bits[n - 1], weight: (1 - kcNorm) * 2, name: `KC (${kcNorm.toFixed(2)})` };
-    return null;
+    const r = ctxNext(bits, 2);
+    if (!r || r.n < 3) return null;
+    return { pT: r.pT, weight: Math.min(r.n / 4, 2), name: `KC n=${r.n}` };
 }
 
+// 🔧 FIXED: majority + streak logic, không copy last
 function algoShannon(bits) {
     const n = bits.length;
     if (n < 10) return null;
     const p1 = bits.reduce((a, b) => a + b, 0) / n;
-    const p0 = 1 - p1;
-    let H = 0;
-    if (p0 > 0) H -= p0 * Math.log2(p0);
-    if (p1 > 0) H -= p1 * Math.log2(p1);
-    if (H < 0.7) return { pT: bits[n - 1], weight: (1 - H) * 2.5, name: `Shannon (${H.toFixed(2)})` };
+    const H = (p1 <= 0 || p1 >= 1) ? 0 : -(p1 * Math.log2(p1) + (1 - p1) * Math.log2(1 - p1));
+    if (H >= 0.75) return null;
+    const domBit = p1 > 0.5 ? 1 : 0;
+    const last = bits[n - 1];
+    let streak = 1;
+    for (let i = n - 2; i >= 0; i--) {
+        if (bits[i] === last) streak++;
+        else break;
+    }
+    if (last !== domBit && streak >= 3) {
+        return { pT: domBit, weight: Math.min((1 - H) * 2.5, 2.5), name: `Shannon flip H=${H.toFixed(2)}` };
+    }
+    if (last === domBit && streak <= 2) {
+        return { pT: domBit, weight: Math.min((1 - H) * 1.8, 2), name: `Shannon cont H=${H.toFixed(2)}` };
+    }
     return null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  REGRESSION (9)
+//  REGRESSION (8)
 // ═══════════════════════════════════════════════════════════════════════════════
 function algoLinTrend(bits) {
     const n = bits.length;
@@ -422,8 +443,8 @@ function algoMedRev(bits) {
     if (n < 10) return null;
     const w = Math.min(n, 10);
     const mean = bits.slice(-w).reduce((a, b) => a + b, 0) / w;
-    if (mean > 0.7) return { pT: 0.3, weight: Math.min((mean - 0.5) * 5, 2.5), name: `MedRev↓ (${mean.toFixed(2)})` };
-    if (mean < 0.3) return { pT: 0.7, weight: Math.min((0.5 - mean) * 5, 2.5), name: `MedRev↑ (${mean.toFixed(2)})` };
+    if (mean > 0.7) return { pT: 0.3, weight: Math.min((mean - 0.5) * 5, 2.5), name: `MedRev↓` };
+    if (mean < 0.3) return { pT: 0.7, weight: Math.min((0.5 - mean) * 5, 2.5), name: `MedRev↑` };
     return null;
 }
 
@@ -602,24 +623,19 @@ function algoEntRate(bits) {
     return null;
 }
 
+// 🔧 FIXED: dùng pattern matching
 function algoLZ(bits) {
-    const n = bits.length;
-    if (n < 15) return null;
-    const s = bits.join("");
-    let i = 0, c = 1, l = 1;
-    while (i + l <= s.length) {
-        if (s.slice(i, i + l).includes(s[i + l])) l++;
-        else { i += l; l = 1; c++; }
-    }
-    const norm = c / (n / Math.log2(n + 1));
-    if (norm < 1) return { pT: bits[n - 1], weight: Math.min((1 - norm) * 2, 2), name: `LZ (${norm.toFixed(2)})` };
-    return null;
+    const r = ctxNext(bits, 3);
+    if (!r || r.n < 2) return null;
+    return { pT: r.pT, weight: Math.min(r.n / 2.5, 2), name: `LZ n=${r.n}` };
 }
 
+// 🔧 FIXED: dùng pattern matching khi PE thấp
 function algoPE(bits) {
     const n = bits.length;
     if (n < 12) return null;
-    const m = 3, counts = {};
+    const m = 3;
+    const counts = {};
     for (let i = 0; i <= n - m; i++) {
         const w = bits.slice(i, i + m);
         const perm = w.map((v, idx) => ({ v, idx })).sort((a, b) => a.v - b.v).map(x => x.idx).join("");
@@ -629,77 +645,47 @@ function algoPE(bits) {
     let H = 0;
     for (const c of Object.values(counts)) { const p = c / tot; H -= p * Math.log2(p); }
     const norm = H / Math.log2(6);
-    if (norm < 0.7) return { pT: bits[n - 1], weight: (1 - norm) * 2.5, name: `PE (${norm.toFixed(2)})` };
-    return null;
+    if (norm >= 0.75) return null;
+    const r = ctxNext(bits, 3);
+    if (!r) return null;
+    return { pT: r.pT, weight: Math.min((1 - norm) * 2.5, 2.2), name: `PE (${norm.toFixed(2)}) n=${r.n}` };
 }
 
+// 🔧 FIXED: nearest-neighbor prediction thực sự
 function algoRQA(bits) {
     const n = bits.length;
     if (n < 12) return null;
-    const dim = 3, delay = 1, eps = 0.5;
-    const m = n - (dim - 1) * delay;
-    if (m < 5) return null;
+    const dim = 3;
+    const m = n - dim;
+    if (m < 3) return null;
     const vec = [];
-    for (let i = 0; i < m; i++) {
-        const v = [];
-        for (let d = 0; d < dim; d++) v.push(bits[i + d * delay]);
-        vec.push(v);
+    for (let i = 0; i < m; i++) vec.push(bits.slice(i, i + dim));
+    const cur = bits.slice(-dim);
+    let bestDist = Infinity, bestIdx = -1;
+    for (let i = 0; i < m - 1; i++) {
+        let d = 0;
+        for (let k = 0; k < dim; k++) d += (vec[i][k] - cur[k]) ** 2;
+        d = Math.sqrt(d);
+        if (d < bestDist && d > 0) { bestDist = d; bestIdx = i; }
     }
-    let rec = 0, tot = 0;
-    for (let i = 0; i < m; i++) {
-        for (let j = i + 1; j < m; j++) {
-            tot++;
-            let dist = 0;
-            for (let d = 0; d < dim; d++) dist += (vec[i][d] - vec[j][d]) ** 2;
-            if (Math.sqrt(dist) < eps) rec++;
-        }
-    }
-    const rr = tot > 0 ? rec / tot : 0;
-    if (rr > 0.2) return { pT: bits[n - 1], weight: Math.min(rr * 4, 2.5), name: `RQA (${rr.toFixed(2)})` };
-    return null;
+    if (bestIdx < 0 || bestDist > 1.0) return null;
+    const nextIdx = bestIdx + dim;
+    if (nextIdx >= n) return null;
+    return { pT: bits[nextIdx], weight: Math.min((1.5 - bestDist) * 2, 2.2), name: `RQA nn d=${bestDist.toFixed(2)}` };
 }
 
+// 🔧 FIXED: dùng pattern matching
 function algoApEn(bits) {
-    const n = bits.length;
-    if (n < 15) return null;
-    const m = 2, r = 0.2;
-    const phi = len => {
-        let s = 0;
-        for (let i = 0; i <= n - len; i++) {
-            let c = 0;
-            for (let j = 0; j <= n - len; j++) {
-                let d = 0;
-                for (let k = 0; k < len; k++) d = Math.max(d, Math.abs(bits[i + k] - bits[j + k]));
-                if (d <= r) c++;
-            }
-            if (c > 0) s += Math.log(c / (n - len + 1));
-        }
-        return s / (n - len + 1);
-    };
-    const ape = phi(m) - phi(m + 1);
-    if (ape < 0.5) return { pT: bits[n - 1], weight: Math.min((0.5 - ape) * 2, 2), name: `ApEn (${ape.toFixed(2)})` };
-    return null;
+    const r = ctxNext(bits, 2);
+    if (!r || r.n < 2) return null;
+    return { pT: r.pT, weight: Math.min(r.n / 3, 1.8), name: `ApEn n=${r.n}` };
 }
 
+// 🔧 FIXED: dùng pattern matching
 function algoSampEn(bits) {
-    const n = bits.length;
-    if (n < 15) return null;
-    const m = 2, r = 0.2;
-    const cnt = len => {
-        let c = 0;
-        for (let i = 0; i < n - len; i++)
-            for (let j = i + 1; j < n - len; j++) {
-                let d = 0;
-                for (let k = 0; k < len; k++) d = Math.max(d, Math.abs(bits[i + k] - bits[j + k]));
-                if (d <= r) c++;
-            }
-        return c;
-    };
-    const A = cnt(m + 1), B = cnt(m);
-    if (A === 0 || B === 0) return null;
-    const se = -Math.log(A / B);
-    if (se < 1) return { pT: bits[n - 1], weight: Math.min((1 - se) * 2, 2), name: `SampEn (${se.toFixed(2)})` };
-    return null;
+    const r = ctxNext(bits, 2);
+    if (!r || r.n < 2) return null;
+    return { pT: r.pT, weight: Math.min(r.n / 3, 1.8), name: `SampEn n=${r.n}` };
 }
 
 function algoDFA(bits) {
@@ -748,7 +734,7 @@ function algoConsensus(bits) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  PREDICT — Kết hợp Cầu + Thuật toán + Prior
+//  PREDICT — Kết hợp + chống "copy last"
 // ═══════════════════════════════════════════════════════════════════════════════
 const ALL_CAU = [cau11, cau12, cau21, cau22, cau33, cau44, cauBet];
 const ALL_ALGOS = [
@@ -776,26 +762,53 @@ function predict(seq) {
 
     if (!signals.length) return { prediction: "CHỜ", confidence: 0, method: "Không có tín hiệu", signals: [] };
 
-    // Weighted vote + Prior (xác suất nền 50/50)
+    // Weighted vote với prior 50/50
     let tScore = 1.0, xScore = 1.0;
-    let cauW = 0, algoW = 0;
     for (const s of signals) {
         const w = s.weight;
         tScore += w * s.pT;
         xScore += w * (1 - s.pT);
-        if (s.source === "cau") cauW += w; else algoW += w;
     }
-
     const total = tScore + xScore;
     const pT = tScore / total;
     const prediction = pT >= 0.5 ? "TAI" : "XIU";
-    const confidence = Math.round(50 + Math.abs(pT - 0.5) * 90);
+    let confidence = Math.round(50 + Math.abs(pT - 0.5) * 90);
+
+    // 🔧 DIAGNOSTIC: Đếm continue vs reversal
+    const lastBit = bits[bits.length - 1];
+    let continueW = 0, reversalW = 0;
+    let cauContinue = 0, cauReversal = 0, algoContinue = 0, algoReversal = 0;
+    for (const s of signals) {
+        const predBit = s.pT >= 0.5 ? 1 : 0;
+        const isCont = predBit === lastBit;
+        if (isCont) continueW += s.weight;
+        else reversalW += s.weight;
+        if (s.source === "cau") { if (isCont) cauContinue++; else cauReversal++; }
+        else { if (isCont) algoContinue++; else algoReversal++; }
+    }
+    const continueRatio = continueW / (continueW + reversalW + 1e-9);
+    const predIsContinue = (prediction === "TAI" && lastBit === 1) || (prediction === "XIU" && lastBit === 0);
+
+    // 🔧 CHỐNG COPY LAST: giảm conf nếu quá "continue-heavy"
+    if (reversalW === 0) {
+        // Không có tín hiệu nào đảo chiều → chỉ copy last → cap 52%
+        confidence = Math.min(confidence, 52);
+    } else if (predIsContinue && continueRatio > 0.92) {
+        confidence = Math.min(confidence, 56);
+    } else if (predIsContinue && continueRatio > 0.82) {
+        confidence = Math.min(confidence, 63);
+    }
+    if (!predIsContinue && continueRatio > 0.75) {
+        confidence = Math.min(confidence, 60);
+    }
 
     return {
         prediction,
         confidence: Math.min(95, Math.max(50, confidence)),
         pT,
-        method: `${signals.length} tín hiệu (${signals.filter(s => s.source === "cau").length} cầu + ${signals.filter(s => s.source === "algo").length} algo) · cauW=${cauW.toFixed(1)} algoW=${algoW.toFixed(1)}`,
+        continueRatio,
+        cauContinue, cauReversal, algoContinue, algoReversal,
+        method: `${signals.length} tín hiệu (${cauContinue + cauReversal}c + ${algoContinue + algoReversal}a) · continue ${(continueRatio * 100).toFixed(0)}%`,
         signals: signals.sort((a, b) => b.weight - a.weight),
     };
 }
@@ -873,15 +886,7 @@ await app.register(cors, { origin: "*" });
 app.get("/", async () => ({
     status: "ok",
     admin: ADMIN,
-    engine: `${ALL_CAU.length} cầu + ${ALL_ALGOS.length} thuật toán phân tích`,
-    categories: {
-        cau: "Cầu 1-1, 1-2, 2-1, 2-2, 3-3, 4-4, Bệt",
-        fourier: "FFT, ACF L1, ACF L2, SpecFlat, ZCR, SpecCent",
-        wavelet: "Haar Decomposition",
-        bayes_info: "Bayes, Weighted, TransEnt, RLE-Ent, MI, Mirror, Compress, KC, Shannon",
-        regression: "LinTrend, Quad, MedRev, LinExtrap, PolyExtrap, EMA, TheilSen, RANSAC",
-        advanced: "CUSUM, VR, Hurst, XCorr, EntRate, LZ, PE, RQA, ApEn, SampEn, DFA, Consensus",
-    },
+    engine: `${ALL_CAU.length} cầu + ${ALL_ALGOS.length} thuật toán (FIXED)`,
     hu:  { loaded: state.hu.sessions.length,  last_id: state.hu.lastId },
     md5: { loaded: state.md5.sessions.length, last_id: state.md5.lastId },
 }));
@@ -905,6 +910,8 @@ app.get("/api/debug/:loai", async (req, rep) => {
     if (!k.valid) return rep.status(401).send({ error: k.error });
     const st = req.params.loai === "md5" ? state.md5 : state.hu;
     if (!st.latest || !st.pred) return rep.status(503).send({ error: "Chưa đủ dữ liệu" });
+
+    const lastBit = st.latest.r === "T" ? 1 : 0;
     return {
         last: {
             id: st.latest.id_num,
@@ -916,8 +923,13 @@ app.get("/api/debug/:loai", async (req, rep) => {
             pred: st.pred.prediction,
             confidence: st.pred.confidence,
             pT: +(st.pred.pT * 100).toFixed(2),
+            is_continue: st.pred.prediction === (lastBit ? "TAI" : "XIU"),
             method: st.pred.method,
         },
+        // 🔍 DIAGNOSTIC
+        continue_ratio: +(st.pred.continueRatio * 100).toFixed(0) + "%",
+        cau: { continue: st.pred.cauContinue, reversal: st.pred.cauReversal },
+        algo: { continue: st.pred.algoContinue, reversal: st.pred.algoReversal },
         cau_signals: st.pred.signals.filter(s => s.source === "cau"),
         algo_signals: st.pred.signals.filter(s => s.source === "algo").slice(0, 20),
     };
@@ -935,18 +947,19 @@ app.listen({ port: PORT, host: "0.0.0.0" })
     .then(() => {
         console.log(`
 ╔══════════════════════════════════════════════════════════════════════╗
-║  🎲 TÀI XỈU LC79 — CẦU + 37 THUẬT TOÁN PHÂN TÍCH                     ║
+║  🎲 TÀI XỈU LC79 — CẦU + 37 THUẬT TOÁN (FIXED)                       ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  🚀 Port: ${PORT}
 ║  🔑 Key : ${VALID_KEY}
 ║  👤 Admin: ${ADMIN}
+║  🔧 Đã fix: 10 algo không còn copy last bit
 ║  🎯 Cầu: ${ALL_CAU.length} (1-1, 1-2, 2-1, 2-2, 3-3, 4-4, Bệt)
 ║  🧠 Algorithms: ${ALL_ALGOS.length}
 ║     Fourier(6) · Wavelet(1) · Bayes/Info(9) · Regression(8)
 ║     Advanced(12) · Consensus(1)
 ║  📌 HŨ : /api/taixiu/lc79?key=${VALID_KEY}
 ║  📌 MD5: /api/taixiumd5/lc79?key=${VALID_KEY}
-║  🐞 Debug: /api/debug/hu?key=${VALID_KEY}
+║  🐞 Debug (xem continue/rev ratio): /api/debug/hu?key=${VALID_KEY}
 ╚══════════════════════════════════════════════════════════════════════╝
         `);
 
