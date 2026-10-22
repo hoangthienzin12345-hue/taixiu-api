@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-//  TÀI XỈU LC79 — FULL 72 CẦU + BẢNG ĐIỂM (PRODUCTION)
-//  Cầu (72 pattern) + Bảng điểm (16 mức) → Dự đoán tổng hợp
+//  TÀI XỈU LC79 — FULL 72 CẦU + BẢNG ĐIỂM (ANTI-BIAS PRO)
+//  Fix "toàn tài / toàn xỉu" · Cân bằng · Self-learning · Wilson accuracy
 // ═══════════════════════════════════════════════════════════════════════════════
 import fastify from "fastify";
 import cors from "@fastify/cors";
@@ -47,7 +47,7 @@ const BANG_DIEM = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  FETCH & DEFENSIVE PARSE
+//  FETCH & PARSE
 // ═══════════════════════════════════════════════════════════════════════════════
 async function fetchJSON(url, timeoutMs = 6000, retries = 1) {
     for (let a = 0; a <= retries; a++) {
@@ -69,12 +69,8 @@ async function fetchJSON(url, timeoutMs = 6000, retries = 1) {
 async function fetchFirstSuccess(urls) {
     const errors = [];
     for (const url of urls) {
-        try {
-            const json = await fetchJSON(url);
-            return { url, json };
-        } catch (e) {
-            errors.push(`${url} → ${e.message}`);
-        }
+        try { return { url, json: await fetchJSON(url) }; }
+        catch (e) { errors.push(`${url} → ${e.message}`); }
     }
     throw new Error("All URLs failed:\n" + errors.join("\n"));
 }
@@ -158,23 +154,31 @@ const entropy = a => { if (!a.length) return 1; const t = a.filter(x => x === "T
 const freq = (a, w = 20) => { a = a.slice(-w); return a.length ? a.filter(x => x === "T").length / a.length : 0.5; };
 const trans = a => { let tt = 0, tx = 0, xt = 0, xx = 0; for (let i = 1; i < a.length; i++) { if (a[i-1] === "T" && a[i] === "T") tt++; else if (a[i-1] === "T") tx++; else if (a[i] === "T") xt++; else xx++; } return { tt, tx, xt, xx }; };
 const predictTrans = a => { const q = trans(a), last = a.at(-1); if (last === "T") { const n = q.tt + q.tx; return n ? (q.tt/n - 0.5) * 2 : 0; } const n = q.xt + q.xx; return n ? (q.xt/n - 0.5) * 2 : 0; };
-const patternAt = (a, pat) => { if (a.length < pat.length) return null; const z = a.slice(-pat.length); return z.every((v, i) => v === pat[i]) ? pat.at(-1) : null; };
 const alternating = a => a.length > 1 && a.slice(1).every((x, i) => x !== a[i]);
 const runLens = a => runs(a).map(x => x.n);
-const scoreFromNext = (a, next) => next === "T" ? 1 : -1;
+
+// Wilson lower bound (95%)
+function wilsonLower(wins, total, z = 1.96) {
+    if (total === 0) return 0;
+    const pHat = wins / total;
+    const denom = 1 + z * z / total;
+    const center = (pHat + z * z / (2 * total)) / denom;
+    const margin = z * Math.sqrt(pHat * (1 - pHat) / total + z * z / (4 * total * total)) / denom;
+    return Math.max(0, center - margin);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  72 CẦU (từ logic 1.txt)
+//  72 CẦU
 // ═══════════════════════════════════════════════════════════════════════════════
 const defs = [];
 const add  = (name, group, fn, min = 8) => defs.push({ name, group, fn, min });
 
-// ── Bệt (2→8) ──
+// ── Bệt 2→8 + tăng + chuẩn bị gãy (9) ──
 for (let n = 2; n <= 8; n++) add(`Cầu bệt ${n}`, "Bệt", a => { const r = suffix(a); return r && r.n >= n ? (r.v === "T" ? 1 : -1) * (0.55 + Math.min(0.25, (r.n - n) * 0.03)) : 0; }, n + 5);
 add("Cầu bệt tăng tiếp diễn", "Bệt", a => { const r = suffix(a); return r && r.n >= 3 ? (r.v === "T" ? 1 : -1) * 0.72 : 0; }, 10);
 add("Cầu bệt chuẩn bị gãy",   "Bệt", a => { const r = suffix(a); return r && r.n >= 4 ? (r.v === "T" ? -1 : 1) * 0.68 : 0; }, 12);
 
-// ── Cơ bản ──
+// ── Cơ bản (6) ──
 add("Cầu 1-1", "Cầu 1-1", a => alternating(a) ? (a.at(-1) === "T" ? -1 : 1) * 0.86 : 0, 8);
 add("Cầu 2-2", "Cầu nhịp", a => { const r = runs(a); if (r.length < 4) return 0; return r.slice(-4).map(x => x.n).join(",") === "2,2,2,2" ? (r.at(-1).v === "T" ? 1 : -1) * 0.82 : 0; }, 12);
 add("Cầu 3-3", "Cầu nhịp", a => { const r = runs(a); return r.slice(-4).every(x => x.n === 3) ? (r.at(-1).v === "T" ? 1 : -1) * 0.82 : 0; }, 15);
@@ -195,7 +199,7 @@ for (const [name, pat] of [
     }, 15);
 }
 
-// ── Chu kỳ độ dài ──
+// ── Chu kỳ độ dài (4) ──
 add("Cầu tăng dần độ bệt", "Chu kỳ", a => { const l = runLens(a).slice(-5); return l.length === 5 && l.every((v, i) => i === 0 || v > l[i-1]) ? (suffix(a).v === "T" ? 1 : -1) * 0.76 : 0; }, 20);
 add("Cầu giảm dần độ bệt", "Chu kỳ", a => { const l = runLens(a).slice(-5); return l.length === 5 && l.every((v, i) => i === 0 || v < l[i-1]) ? (suffix(a).v === "T" ? 1 : -1) * 0.76 : 0; }, 20);
 add("Cầu lặp độ dài", "Chu kỳ", a => { const l = runLens(a).slice(-6); return l.length === 6 && l[0] === l[2] && l[2] === l[4] && l[1] === l[3] && l[3] === l[5] ? (suffix(a).v === "T" ? 1 : -1) * 0.7 : 0; }, 24);
@@ -209,7 +213,7 @@ add("Cầu sau chuỗi 3", "Chuyển trạng thái", a => { const r = runs(a); r
 add("Cầu sau chuỗi 4+", "Chuyển trạng thái", a => { const r = runs(a); return r.at(-1)?.n >= 4 ? (r.at(-1).v === "T" ? -1 : 1) * 0.62 : 0; }, 14);
 add("Cầu biến đổi trạng thái", "Chuyển trạng thái", a => { const r = runs(a); return r.length >= 2 && r.at(-1).n === 1 && r.at(-2).n >= 2 ? (r.at(-1).v === "T" ? 1 : -1) * 0.65 : 0; }, 10);
 
-// ── Markov ngữ cảnh 1-5 ──
+// ── Markov (10) ──
 for (let k = 1; k <= 5; k++) {
     add(`Cầu ngữ cảnh ${k} bước`, "Markov", a => {
         if (a.length < k + 5) return 0;
@@ -227,16 +231,16 @@ add("Cầu Markov bậc 3", "Markov", a => { if (a.length < 15) return 0; const 
 add("Cầu Markov bậc 4", "Markov", a => { if (a.length < 18) return 0; const c = a.slice(-4).join(""); let t = 0, x = 0; for (let i = 4; i < a.length; i++) if (a.slice(i - 4, i).join("") === c) a[i] === "T" ? t++ : x++; return t + x >= 2 ? (t - x) / (t + x) : 0; }, 18);
 add("Cầu suffix tái diễn", "Lặp mẫu", a => { if (a.length < 12) return 0; const s = a.slice(-3).join(""); let t = 0, x = 0; for (let i = 3; i < a.length - 1; i++) if (a.slice(i - 3, i).join("") === s) a[i] === "T" ? t++ : x++; return t + x >= 2 ? (t - x) / (t + x) : 0; }, 12);
 
-// ── Chu kỳ lag 2→9 ──
+// ── Chu kỳ lag 2→9 (8) ──
 for (let lag = 2; lag <= 9; lag++) add(`Cầu chu kỳ lag ${lag}`, "Chu kỳ", a => { if (a.length < lag * 3) return 0; let t = 0, x = 0; for (let i = lag; i < a.length; i++) if (a[i] === a[i - lag]) t++; else x++; return t + x >= 8 ? (t - x) / (t + x) * 0.72 : 0; }, lag * 2 + 4);
 
-// ── Lặp block ──
+// ── Lặp block (4) ──
 add("Cầu lặp block 3", "Lặp block", a => { if (a.length < 9) return 0; const z = a.slice(-6), p = z.slice(0, 3); return z.slice(3).join("") === p.join("") ? (p.at(-1) === "T" ? 1 : -1) * 0.72 : 0; }, 12);
 add("Cầu lặp block 4", "Lặp block", a => { if (a.length < 12) return 0; const z = a.slice(-8), p = z.slice(0, 4); return z.slice(4).join("") === p.join("") ? (p.at(-1) === "T" ? 1 : -1) * 0.72 : 0; }, 15);
 add("Cầu đảo block", "Lặp block", a => { if (a.length < 10) return 0; const z = a.slice(-6), p = z.slice(0, 3).map(opp).join(""); return z.slice(3).join("") === p ? (z.at(-1) === "T" ? 1 : -1) * 0.7 : 0; }, 12);
 add("Cầu gương chuỗi", "Lặp block", a => { if (a.length < 8) return 0; const z = a.slice(-6), p = z.slice(0, 3).reverse().join(""); return z.slice(3).join("") === p ? (z.at(-1) === "T" ? 1 : -1) * 0.68 : 0; }, 12);
 
-// ── Thống kê ──
+// ── Thống kê (6) ──
 add("Cầu lệch tần suất 10", "Thống kê", a => { const p = freq(a, 10); return Math.abs(p - 0.5) >= 0.25 ? (p > 0.5 ? 1 : -1) * 0.62 : 0; }, 12);
 add("Cầu lệch tần suất 20", "Thống kê", a => { const p = freq(a, 20); return Math.abs(p - 0.5) >= 0.18 ? (p > 0.5 ? 1 : -1) * 0.6 : 0; }, 20);
 add("Cầu lệch tần suất 50", "Thống kê", a => { const p = freq(a, 50); return Math.abs(p - 0.5) >= 0.12 ? (p > 0.5 ? 1 : -1) * 0.56 : 0; }, 50);
@@ -244,13 +248,13 @@ add("Cầu hồi quy trung bình", "Thống kê", a => { const p = freq(a, 10); 
 add("Cầu momentum", "Thống kê", a => { const p = freq(a, 8), q = freq(a, 24); return (p - q) * 1.5; }, 24);
 add("Cầu anti-momentum", "Thống kê", a => { const p = freq(a, 8), q = freq(a, 24); return -(p - q) * 1.25; }, 24);
 
-// ── Chế độ ──
+// ── Chế độ (4) ──
 add("Cầu entropy thấp", "Chế độ", a => entropy(a.slice(-12)) < 0.75 ? (suffix(a).v === "T" ? 1 : -1) * 0.58 : 0, 15);
 add("Cầu entropy cao", "Chế độ", a => entropy(a.slice(-12)) > 0.98 ? (suffix(a).v === "T" ? -1 : 1) * 0.42 : 0, 15);
 add("Cầu đổi chế độ", "Chế độ", a => { if (a.length < 30) return 0; const e1 = entropy(a.slice(-10)), e2 = entropy(a.slice(-30, -10)); return Math.abs(e1 - e2) > 0.18 ? (freq(a, 10) > 0.5 ? 1 : -1) * 0.55 : 0; }, 30);
 add("Cầu lệch cửa sổ", "Chế độ", a => { const p = freq(a, 5), q = freq(a, 30); return Math.abs(p - q) > 0.3 ? (p > 0.5 ? 1 : -1) * 0.5 : 0; }, 30);
 
-// ── Meta ──
+// ── Meta (7) ──
 add("Cầu đồng thuận 5-10", "Meta", a => { const p = freq(a, 5), q = freq(a, 10); return Math.sign(p - 0.5) === Math.sign(q - 0.5) && Math.abs(p - 0.5) > 0.1 ? (p > 0.5 ? 1 : -1) * 0.68 : 0; }, 10);
 add("Cầu đồng thuận 10-20-50", "Meta", a => { const ps = [5, 10, 20].map(w => freq(a, w)); const sg = ps.map(p => Math.sign(p - 0.5)); return sg.every(x => x === sg[0]) && sg[0] ? (sg[0]) * 0.7 : 0; }, 20);
 add("Cầu xung đột cửa sổ", "Meta", a => { const p = freq(a, 5), q = freq(a, 30); return Math.sign(p - 0.5) !== Math.sign(q - 0.5) ? (p > 0.5 ? 1 : -1) * 0.28 : 0; }, 30);
@@ -259,19 +263,20 @@ add("Cầu bền hướng", "Meta", a => { const z = a.slice(-8); return z.lengt
 add("Cầu đảo có xác nhận", "Meta", a => { if (!alternating(a.slice(-8))) return 0; return a.at(-1) === "T" ? -0.7 : 0.7; }, 12);
 add("Cầu tổng hợp cầu đang sống", "Meta", a => { const p = [freq(a, 5), freq(a, 10), freq(a, 20)]; const s = p.reduce((u, v) => u + (v - 0.5), 0) / p.length; return Math.abs(s) > 0.08 ? s * 1.3 : 0; }, 20);
 
-if (defs.length < 72) throw new Error(`Registry chỉ có ${defs.length} cầu (cần ≥72)`);
+if (defs.length < 72) throw new Error(`Registry chỉ có ${defs.length} cầu`);
 defs.splice(72);
 defs.forEach((d, i) => { d.patternLabel = d.name; d.name = "Cầu " + (i + 1); });
 
 console.log(`[Engine] Đã nạp ${defs.length} cầu`);
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  CẦU ENGINE (port từ logic 1.txt)
+//  CẦU ENGINE — 🔧 FIX: Group-level vote với CAP chống bias
 // ═══════════════════════════════════════════════════════════════════════════════
 class CauEngine {
     constructor() {
         this.stats = new Map(defs.map(d => [d.name, { n: 0, w: 0, loss: 0 }]));
     }
+
     detect(a) {
         const out = [];
         for (const d of defs) {
@@ -288,28 +293,44 @@ class CauEngine {
                 confidence: 0.35 + 0.35 * strength + 0.2 * reliability + 0.1 * support,
             });
         }
-        out.sort((x, y) => (y.confidence - Math.abs(y.raw) * 0.1) - (x.confidence - Math.abs(x.raw) * 0.1));
         return out;
     }
-    choose(a) {
-        const ds = this.detect(a);
-        if (!ds.length) return { ready: false, patterns: [], reason: "CHƯA NHẬN DIỆN ĐƯỢC CẦU" };
-        const grouped = new Map();
-        for (const d of ds) { if (!grouped.has(d.group)) grouped.set(d.group, []); grouped.get(d.group).push(d); }
-        const candidates = [];
-        for (const [group, arr] of grouped) {
-            const s = arr.reduce((u, x) => u + x.signal * x.confidence, 0) / arr.reduce((u, x) => u + x.confidence, 0);
-            if (Math.abs(s) >= 0.22) candidates.push({ group, score: s, top: arr[0] });
+
+    // 🔧 FIX: Vote theo GROUP (không pick 1 nhóm) với CAP để chống bệt bias
+    weightedVote(a) {
+        const detected = this.detect(a);
+        if (!detected.length) return { tScore: 0, xScore: 0, detected: [], groups: {} };
+
+        // Gom theo group
+        const groups = new Map();
+        for (const d of detected) {
+            if (!groups.has(d.group)) groups.set(d.group, { t: 0, x: 0, n: 0, top: d });
+            const g = groups.get(d.group);
+            const w = d.confidence;
+            if (d.signal > 0) g.t += w;
+            else g.x += w;
+            g.n++;
+            if (d.confidence > g.top.confidence) g.top = d;
         }
-        candidates.sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
-        if (!candidates.length) return { ready: false, patterns: ds.slice(0, 5), reason: "CẦU YẾU / XUNG ĐỘT" };
-        const best = candidates[0];
-        const corroboration = candidates.filter(x => Math.sign(x.score) === Math.sign(best.score)).length;
-        const opposite = candidates.filter(x => Math.sign(x.score) !== Math.sign(best.score)).length;
-        const conf = Math.min(0.86, Math.max(0.5, 0.52 + Math.abs(best.score) * 0.22 + Math.min(0.12, corroboration * 0.025) - Math.min(0.10, opposite * 0.02)));
-        const active = { name: best.top.name, group: best.group, side: best.score > 0 ? "T" : "X", confidence: conf, corroboration, opposite };
-        return { ready: true, patterns: ds.slice(0, 8), active, side: active.side, confidence: conf };
+
+        // Vote per-group với CAP để chống group có nhiều cầu dominate
+        let tScore = 0, xScore = 0;
+        const groupInfo = {};
+        for (const [name, g] of groups) {
+            const sum = g.t + g.x;
+            if (sum === 0) continue;
+            // 🔧 CAP: nhóm có nhiều cầu → không được quá dominate
+            // Cầu fire 1 cái → weight 1.0; fire 10 cái → weight cap 2.5
+            const capWeight = Math.min(2.5, Math.sqrt(g.n));
+            const pT = g.t / sum;
+            tScore += pT * capWeight;
+            xScore += (1 - pT) * capWeight;
+            groupInfo[name] = { pT: pT, weight: capWeight, count: g.n, top: g.top.name };
+        }
+
+        return { tScore, xScore, detected, groups: groupInfo };
     }
+
     learn(target, result) {
         if (!target || !result) return;
         const hit = target.result === result;
@@ -324,82 +345,122 @@ class CauEngine {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  COMBINE — Cầu + Bảng điểm
+//  PREDICT — 🔧 FIX: Anti-bias + Streak tracking + Confidence calibration
 // ═══════════════════════════════════════════════════════════════════════════════
-function combinedPredict(engine, sessions) {
+function predict(engine, sessions, predictions) {
     const seq = sessions.map(s => s.r);
-    const cau = engine.choose(seq);
     const last = sessions[sessions.length - 1];
     const diem = BANG_DIEM[last.point] || null;
 
-    // Cả 2 đều có
-    if (cau.ready && diem) {
-        if (cau.side === diem.pred) {
-            const conf = Math.min(95, Math.round((cau.confidence * 100 + diem.conf) / 2) + 8);
-            return {
-                prediction: cau.side === "T" ? "TAI" : "XIU",
-                confidence: conf,
-                method: `✅ ĐỒNG THUẬN · Cầu ${cau.active.name} (${Math.round(cau.confidence * 100)}%) + Điểm ${last.point} (${diem.conf}%)`,
-                cau, diem,
-            };
-        }
-        const cauConf = Math.round(cau.confidence * 100);
-        if (cauConf >= diem.conf + 5) {
-            return {
-                prediction: cau.side === "T" ? "TAI" : "XIU",
-                confidence: Math.max(55, cauConf - 8),
-                method: `⚔️ CẦU thắng · ${cauConf}% vs ${diem.conf}%`,
-                cau, diem,
-            };
-        }
-        if (diem.conf >= cauConf + 5) {
-            return {
-                prediction: diem.pred === "T" ? "TAI" : "XIU",
-                confidence: Math.max(55, diem.conf - 5),
-                method: `⚔️ ĐIỂM thắng · ${diem.conf}% vs ${cauConf}%`,
-                cau, diem,
-            };
-        }
-        return {
-            prediction: cau.side === "T" ? "TAI" : "XIU",
-            confidence: Math.max(52, Math.round((cauConf + diem.conf) / 2) - 5),
-            method: `⚖️ Cân bằng → ưu tiên cầu`,
-            cau, diem,
-        };
-    }
+    // 1. Vote từ cầu (group-capped)
+    const vote = engine.weightedVote(seq);
+    const { tScore: cauT, xScore: cauX, groups } = vote;
 
-    if (cau.ready) {
-        return {
-            prediction: cau.side === "T" ? "TAI" : "XIU",
-            confidence: Math.round(cau.confidence * 100),
-            method: `🎯 Chỉ cầu · ${cau.active.name} (${Math.round(cau.confidence * 100)}%)`,
-            cau, diem: null,
-        };
-    }
+    // 2. Prior + cầu weight
+    let totalT = 2.0 + cauT * 1.5;
+    let totalX = 2.0 + cauX * 1.5;
 
+    // 3. Điểm (dùng conf thay vì fixed weight)
     if (diem) {
-        return {
-            prediction: diem.pred === "T" ? "TAI" : "XIU",
-            confidence: diem.conf,
-            method: `📊 Chỉ điểm · ${diem.note}`,
-            cau: null, diem,
-        };
+        const dw = diem.conf / 40; // 60% → 1.5, 80% → 2.0
+        if (diem.pred === "T") totalT += dw;
+        else totalX += dw;
     }
+
+    const total = totalT + totalX;
+    let pT = totalT / total;
+
+    // ── ANTI-BIAS ──────────────────────────────────────────────────────────
+    const recentPreds = predictions.slice(-20).map(p => p.prediction);
+    const last5 = recentPreds.slice(-5);
+    const t5 = last5.filter(p => p === "TAI").length;
+    const x5 = last5.length - t5;
+
+    // Nếu 4+/5 gần nhất cùng hướng → nudge đảo
+    if (t5 >= 4) pT -= 0.08;
+    else if (x5 >= 4) pT += 0.08;
+
+    // Nếu 8+/10 cùng hướng → nudge mạnh hơn
+    const last10 = recentPreds.slice(-10);
+    const t10 = last10.filter(p => p === "TAI").length;
+    const x10 = last10.length - t10;
+    if (t10 >= 8) pT -= 0.06;
+    else if (x10 >= 8) pT += 0.06;
+
+    // Consecutive streak
+    let consecutive = 0;
+    const lastDir = recentPreds[recentPreds.length - 1];
+    for (let i = recentPreds.length - 1; i >= 0; i--) {
+        if (recentPreds[i] === lastDir) consecutive++;
+        else break;
+    }
+    if (consecutive >= 3 && lastDir === "TAI") pT -= 0.05;
+    if (consecutive >= 3 && lastDir === "XIU") pT += 0.05;
+
+    // ── Predictive entropy: nếu pT quá gần 0.5 → không chắc, giảm conf ──
+    pT = Math.max(0.12, Math.min(0.88, pT));
+
+    const prediction = pT >= 0.5 ? "TAI" : "XIU";
+    let confidence = Math.round(50 + Math.abs(pT - 0.5) * 90);
+
+    // ── CONFIDENCE PENALTY ─────────────────────────────────────────────────
+    // Cùng dự đoán liên tiếp → giảm conf
+    let sameStreak = 0;
+    for (let i = recentPreds.length - 1; i >= 0; i--) {
+        if (recentPreds[i] === prediction) sameStreak++;
+        else break;
+    }
+    if (sameStreak >= 2) {
+        confidence = Math.max(50, confidence - (sameStreak - 1) * 5);
+    }
+
+    // ── CALIBRATION từ accuracy thực ──────────────────────────────────────
+    const scored = predictions.filter(p => p.correct !== undefined);
+    if (scored.length >= 20) {
+        const recent = scored.slice(-50);
+        const wins = recent.filter(p => p.correct).length;
+        const acc = wins / recent.length;
+        // Nếu acc < 45%, giảm mạnh confidence
+        if (acc < 0.45) confidence = Math.round(confidence * 0.6);
+        else if (acc < 0.5) confidence = Math.round(confidence * 0.85);
+        // Nếu acc > 60%, boost nhẹ
+        else if (acc > 0.6) confidence = Math.min(95, Math.round(confidence * 1.05));
+    }
+
+    // ── Bias cảnh báo trong method ────────────────────────────────────────
+    let biasNote = "";
+    if (t10 >= 8) biasNote = " ⚠️ Bias TÀI 10 phiên";
+    else if (x10 >= 8) biasNote = " ⚠️ Bias XỈU 10 phiên";
+    else if (consecutive >= 3) biasNote = ` ⚠️ Chuỗi ${consecutive}`;
 
     return {
-        prediction: "CHỜ", confidence: 0,
-        method: "Không có tín hiệu",
-        cau: null, diem: null,
+        prediction,
+        confidence: Math.max(50, Math.min(92, confidence)),
+        pT,
+        cauT, cauX, groups,
+        diem,
+        detectedCount: vote.detected.length,
+        biasNote,
+        method: `${vote.detected.length} cầu · cauT=${cauT.toFixed(1)} cauX=${cauX.toFixed(1)}` +
+                (diem ? ` · điểm ${last.point}(${diem.conf}%)` : "") +
+                biasNote,
+        topPatterns: vote.detected.sort((a, b) => b.confidence - a.confidence).slice(0, 8),
     };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  STATE
 // ═══════════════════════════════════════════════════════════════════════════════
-const state = {
-    md5: { sessions: [], lastId: null, engine: new CauEngine(), pred: null, latest: null, pending: null, seen: new Set(), activeUrl: null, lastError: null },
-    hu:  { sessions: [], lastId: null, engine: new CauEngine(), pred: null, latest: null, pending: null, seen: new Set(), activeUrl: null, lastError: null },
-};
+function makeState() {
+    return {
+        sessions: [], lastId: null, engine: new CauEngine(),
+        pred: null, latest: null, pending: null, seen: new Set(),
+        predictions: [], // {targetId, prediction, confidence, actual, correct, method}
+        activeUrl: null, lastError: null,
+    };
+}
+
+const state = { md5: makeState(), hu: makeState() };
 
 const nextId = id => { const n = Number(id); return Number.isFinite(n) ? String(n + 1) : id + "+"; };
 
@@ -409,6 +470,31 @@ function update(key, arr, activeUrl) {
     if (!arr.length) return;
     const latest = arr[arr.length - 1];
 
+    // ── Score pending predictions ──
+    if (st.pending) {
+        const match = st.sessions.find(s => s.id_num === st.pending.targetId);
+        if (match && !st.predictions.some(p => p.targetId === match.id_num)) {
+            const actual = match.r === "T" ? "TAI" : "XIU";
+            const correct = st.pending.prediction === actual;
+            st.predictions.push({
+                targetId: match.id_num,
+                prediction: st.pending.prediction,
+                confidence: st.pending.confidence,
+                actual, correct,
+                method: st.pending.method,
+            });
+            if (st.predictions.length > 500) st.predictions.shift();
+
+            if (st.pending.cau) st.engine.learn(st.pending.cau, actual);
+            st.pending = null;
+            console.log(`[${key.toUpperCase()}] Score #${match.id_num}: ${st.pending?.prediction || ""} → ${actual} ${correct ? "✅" : "❌"}`);
+        } else if (!match && latest.id_num > st.pending.targetId) {
+            // Skip pending cũ (missed target)
+            st.pending = null;
+        }
+    }
+
+    // ── Merge sessions ──
     if (!st.lastId) {
         st.sessions = arr;
         st.lastId = latest.id;
@@ -419,9 +505,21 @@ function update(key, arr, activeUrl) {
         for (const r of news) {
             if (st.seen.has(r.id)) continue;
             st.seen.add(r.id);
-            if (st.pending && r.id === st.pending.targetId) {
-                st.engine.learn(st.pending.target, r.r === "T" ? "TAI" : "XIU");
+            // Score this new session if matches pending
+            if (st.pending && r.id_num === st.pending.targetId) {
+                const actual = r.r === "T" ? "TAI" : "XIU";
+                const correct = st.pending.prediction === actual;
+                st.predictions.push({
+                    targetId: r.id_num, prediction: st.pending.prediction,
+                    confidence: st.pending.confidence, actual, correct,
+                    method: st.pending.method,
+                });
+                if (st.predictions.length > 500) st.predictions.shift();
+                if (st.pending.cau) st.engine.learn(st.pending.cau, actual);
                 st.pending = null;
+                console.log(`[${key.toUpperCase()}] #${r.id_num}: ${actual} ${correct ? "✅" : "❌"}`);
+            } else if (st.pending && r.id_num > st.pending.targetId) {
+                st.pending = null; // missed
             }
             st.sessions.push(r);
         }
@@ -430,15 +528,20 @@ function update(key, arr, activeUrl) {
         console.log(`🆕 [${key.toUpperCase()}] +${news.length}`);
     }
 
+    // ── Predict ──
     const recent = st.sessions.slice(-MAX);
     st.latest = recent[recent.length - 1];
-    const pred = combinedPredict(st.engine, recent);
-    const targetId = pred.prediction !== "CHỜ" ? nextId(st.latest.id) : null;
+    const pred = predict(st.engine, recent, st.predictions);
+    const targetId = nextId(st.latest.id);
     st.pred = { ...pred, targetId };
 
-    if (targetId && (!st.pending || st.pending.targetId !== targetId)) {
-        st.pending = { targetId, target: pred.cau ? { result: pred.prediction, patterns: pred.cau.patterns } : null };
-    }
+    st.pending = {
+        targetId,
+        prediction: pred.prediction,
+        confidence: pred.confidence,
+        method: pred.method,
+        cau: { result: pred.prediction, patterns: pred.topPatterns },
+    };
 }
 
 async function poll(key) {
@@ -456,7 +559,7 @@ async function poll(key) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  RESPONSE (gọn 7 field)
+//  RESPONSE
 // ═══════════════════════════════════════════════════════════════════════════════
 function buildResp(key) {
     const st = state[key];
@@ -469,7 +572,7 @@ function buildResp(key) {
 
     return {
         Id:          ADMIN,
-        Phien_nay:   p.targetId || nextId(last.id),
+        Phien_nay:   p.targetId,
         Du_doan:     duDoan,
         Ty_le:       tyLe,
         Phien_truoc: last.id_num,
@@ -489,9 +592,9 @@ await app.register(cors, { origin: "*" });
 app.get("/", async () => ({
     status: "ok",
     admin: ADMIN,
-    engine: `${defs.length} cầu + 16 mức bảng điểm`,
-    hu:  { loaded: state.hu.sessions.length,  last_id: state.hu.lastId,  url: state.hu.activeUrl,  error: state.hu.lastError },
-    md5: { loaded: state.md5.sessions.length, last_id: state.md5.lastId, url: state.md5.activeUrl, error: state.md5.lastError },
+    engine: `${defs.length} cầu + bảng điểm + anti-bias`,
+    hu:  { loaded: state.hu.sessions.length, last_id: state.hu.lastId, predictions: state.hu.predictions.length, url: state.hu.activeUrl, error: state.hu.lastError },
+    md5: { loaded: state.md5.sessions.length, last_id: state.md5.lastId, predictions: state.md5.predictions.length, url: state.md5.activeUrl, error: state.md5.lastError },
 }));
 
 app.get("/api/raw/:game", async (req, rep) => {
@@ -523,10 +626,7 @@ app.get("/api/taixiu/lc79", async (req, rep) => {
     if (!k.valid) return rep.status(401).send({ error: k.error });
     const r = buildResp("hu");
     if (r) return r;
-    return rep.status(503).send({
-        error: "Đang tải dữ liệu HŨ...",
-        debug: { loaded: state.hu.sessions.length, last_error: state.hu.lastError, hint: "Chạy /api/raw/hu để debug" },
-    });
+    return rep.status(503).send({ error: "Đang tải dữ liệu HŨ...", debug: { loaded: state.hu.sessions.length, last_error: state.hu.lastError } });
 });
 
 app.get("/api/taixiumd5/lc79", async (req, rep) => {
@@ -534,30 +634,44 @@ app.get("/api/taixiumd5/lc79", async (req, rep) => {
     if (!k.valid) return rep.status(401).send({ error: k.error });
     const r = buildResp("md5");
     if (r) return r;
-    return rep.status(503).send({
-        error: "Đang tải dữ liệu MD5...",
-        debug: { loaded: state.md5.sessions.length, last_error: state.md5.lastError, hint: "Chạy /api/raw/md5 để debug" },
-    });
+    return rep.status(503).send({ error: "Đang tải dữ liệu MD5...", debug: { loaded: state.md5.sessions.length, last_error: state.md5.lastError } });
 });
 
 app.get("/api/debug/:loai", async (req, rep) => {
     const k = checkKey(req.query);
     if (!k.valid) return rep.status(401).send({ error: k.error });
     const st = req.params.loai === "md5" ? state.md5 : state.hu;
-    if (!st.latest || !st.pred) return rep.status(503).send({
-        error: "Chưa đủ dữ liệu", loaded: st.sessions.length, url: st.activeUrl, last_error: st.lastError,
-    });
+    if (!st.latest || !st.pred) return rep.status(503).send({ error: "Chưa đủ dữ liệu", loaded: st.sessions.length });
+
+    // Score stats
+    const scored = st.predictions.filter(p => p.correct !== undefined);
+    const wins = scored.filter(p => p.correct).length;
+    const recent20 = scored.slice(-20);
+    const wins20 = recent20.filter(p => p.correct).length;
+
     return {
         last: { id: st.latest.id_num, result: st.latest.r, dices: st.latest.dices, point: st.latest.point },
         prediction: {
             pred: st.pred.prediction,
             confidence: st.pred.confidence,
+            pT: +(st.pred.pT * 100).toFixed(2),
             method: st.pred.method,
+            bias_note: st.pred.biasNote || null,
         },
-        cau_used: st.pred.cau?.active || null,
         diem_used: st.pred.diem,
-        top_patterns: st.pred.cau?.patterns?.slice(0, 8) || [],
-        url: st.activeUrl,
+        cau_groups: st.pred.groups,
+        top_patterns: st.pred.topPatterns?.slice(0, 8),
+        accuracy: {
+            total: scored.length,
+            wins,
+            losses: scored.length - wins,
+            rate: scored.length ? (wins / scored.length * 100).toFixed(1) + "%" : "—",
+            wilson_lb: scored.length ? (wilsonLower(wins, scored.length) * 100).toFixed(1) + "%" : "—",
+            recent20: recent20.length ? (wins20 / recent20.length * 100).toFixed(0) + "%" : "—",
+        },
+        recent_predictions: st.predictions.slice(-15).map(p => ({
+            id: p.targetId, pred: p.prediction, actual: p.actual, correct: p.correct, conf: p.confidence,
+        })),
     };
 });
 
@@ -579,33 +693,21 @@ app.listen({ port: PORT, host: "0.0.0.0" })
     .then(() => {
         console.log(`
 ╔══════════════════════════════════════════════════════════════════════╗
-║  🎲 TÀI XỈU LC79 — FULL ${defs.length} CẦU + BẢNG ĐIỂM                    ║
+║  🎲 TÀI XỈU LC79 — 72 CẦU + BẢNG ĐIỂM + ANTI-BIAS                    ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║  🚀 Port: ${PORT}  🔑 ${VALID_KEY}  👤 ${ADMIN}
 ║
-║  🧠 ${defs.length} cầu:
-║     • Bệt 2-8 + tăng + chuẩn bị gãy (9)
-║     • Cơ bản 1-1, 1-2, 2-1, 2-2, 3-3, 4-4 (6)
-║     • Nhịp run-length 1-2-1 → 4-1-4 (15)
-║     • Chu kỳ độ dài (4)
-║     • Chuyển trạng thái (6)
-║     • Markov ngữ cảnh 1-5 (5) + chuyển tiếp (2) + bậc 2-4 (3)
-║     • Suffix tái diễn (1)
-║     • Chu kỳ lag 2-9 (8)
-║     • Lặp block 3-4, đảo, gương (4)
-║     • Thống kê lệch TS, hồi quy, momentum (6)
-║     • Chế độ entropy thấp/cao, đổi chế độ (4)
-║     • Meta đồng thuận, xung đột, ổn định (7)
+║  🔧 FIX "TOÀN TÀI/XỈU":
+║     ✓ Group-capped vote (nhóm không dominate)
+║     ✓ Anti-bias: nudge đảo khi 4+/5 hoặc 8+/10
+║     ✓ Confidence penalty khi dự đoán trùng lặp
+║     ✓ Calibration từ accuracy thực tế
+║     ✓ Prior 2.0 cho mỗi bên
 ║
-║  📊 Bảng điểm MD5 16 mức (X3 → T18)
-║
-║  🎯 Kết hợp: Đồng thuận +8%, Xung đột chọn bên mạnh
-║
+║  📊 72 cầu + 16 mức bảng điểm
 ║  📌 HŨ : /api/taixiu/lc79?key=${VALID_KEY}
 ║  📌 MD5: /api/taixiumd5/lc79?key=${VALID_KEY}
 ║  🐞 Debug: /api/debug/hu?key=${VALID_KEY}
-║  🔍 Raw: /api/raw/hu?key=${VALID_KEY}
-║  📋 Bảng điểm: /api/bang-diem?key=${VALID_KEY}
 ╚══════════════════════════════════════════════════════════════════════╝
         `);
 
